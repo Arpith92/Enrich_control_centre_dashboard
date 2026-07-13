@@ -47,7 +47,8 @@ export default function OperationsLog({ onBack, plants }) {
     }
   }, [criteria])
 
-  useAutoRefresh(load, 10000)
+  useAutoRefresh(load, 10000,
+    `${criteria.fromDate}|${criteria.toDate}|${criteria.eventType}|${criteria.severity}|${criteria.plant}`)
 
   const sites = useMemo(() => [...new Set([
     'MH SLDC', 'Site Weather', ...plants.map((item) => item.name), ...rows.map((row) => row.PlantName),

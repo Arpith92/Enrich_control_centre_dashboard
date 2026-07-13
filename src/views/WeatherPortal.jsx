@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
   Air, ArrowBack, CloudOutlined, Compress, DeviceThermostat, History,
@@ -51,14 +51,16 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
   const [fromDate, setFromDate] = useState(shiftDays(-6))
   const [toDate, setToDate] = useState(today)
   const [historyCriteria, setHistoryCriteria] = useState({ from: shiftDays(-6), to: today })
-  const [metric, setMetric] = useState('temperature_2m')
+  const [metric, setMetric] = useState('global_tilted_irradiance')
   const [payload, setPayload] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const requestSequence = useRef(0)
   const plant = plants.find((item) => item.id === selectedId) || plants[0]
 
   const load = useCallback(async () => {
     if (!plant) return
+    const requestId = ++requestSequence.current
     setLoading(true)
     setError('')
     const params = new URLSearchParams({ lat: plant.lat, lon: plant.lon })
@@ -72,16 +74,20 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail.detail || `Weather API returned ${response.status}`)
       }
-      setPayload(await response.json())
+      const nextPayload = await response.json()
+      if (requestId === requestSequence.current) setPayload(nextPayload)
     } catch (requestError) {
-      setError(requestError.message || 'Weather data unavailable')
-      setPayload(null)
+      if (requestId === requestSequence.current) {
+        setError(requestError.message || 'Weather data unavailable')
+        setPayload(null)
+      }
     } finally {
-      setLoading(false)
+      if (requestId === requestSequence.current) setLoading(false)
     }
   }, [plant, mode, historyCriteria])
 
-  useAutoRefresh(load, mode === 'forecast' ? 60000 : 300000)
+  useAutoRefresh(load, mode === 'forecast' ? 60000 : 300000,
+    `${selectedId}|${mode}|${historyCriteria.from}|${historyCriteria.to}`)
 
   const rows = useMemo(() => hourlyRows(payload?.hourly), [payload])
   const visibleRows = useMemo(() => mode === 'forecast'

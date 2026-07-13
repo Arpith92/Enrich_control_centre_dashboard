@@ -66,7 +66,8 @@ export default function SldcReports({ plants, selectedPlant, onPlantChange, repo
     }
   }, [selectedPlant, query])
 
-  useAutoRefresh(loadReport, query.toDate === today ? 15000 : 60000)
+  useAutoRefresh(loadReport, query.toDate === today ? 15000 : 60000,
+    `${selectedPlant}|${query.fromDate}|${query.toDate}`)
 
   const totals = useMemo(() => {
     const expected = report.availability.reduce((sum, row) => sum + row.ExpectedSamples, 0)
