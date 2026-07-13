@@ -1,0 +1,321 @@
+"""Single-port server for the React control centre and integrated MH SLDC Scout."""
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta
+import hashlib
+from io import BytesIO
+from pathlib import Path
+import re
+import requests
+
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from pydantic import BaseModel, Field
+
+from sldc.database import db
+from sldc.config import settings
+from sldc.parser import TARGET_STATIONS
+from sldc.scheduler import collector
+
+ROOT = Path(__file__).resolve().parent
+DIST = ROOT / "dist"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.initialize()
+    collector.start()
+    yield
+    collector.stop()
+
+
+app = FastAPI(title="Enrich Control Centre", version="2.0.0", lifespan=lifespan)
+
+WEATHER_HOURLY = ",".join([
+    "temperature_2m", "relative_humidity_2m", "apparent_temperature",
+    "precipitation", "rain", "weather_code", "cloud_cover", "surface_pressure",
+    "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m",
+    "shortwave_radiation", "direct_radiation", "diffuse_radiation",
+    "global_tilted_irradiance",
+])
+WEATHER_DAILY = ",".join([
+    "weather_code", "temperature_2m_max", "temperature_2m_min",
+    "apparent_temperature_max", "apparent_temperature_min", "precipitation_sum",
+    "rain_sum", "precipitation_probability_max", "sunrise", "sunset",
+    "sunshine_duration", "wind_speed_10m_max", "wind_gusts_10m_max",
+    "shortwave_radiation_sum",
+])
+_incident_cache = {"expires": datetime.min, "rows": []}
+
+
+class OperationalFeedEntry(BaseModel):
+    event_type: str = Field(pattern="^(alarm|event)$")
+    plant: str
+    message: str
+    severity: str
+    source: str
+    timestamp: datetime
+
+
+class OperationalFeedBatch(BaseModel):
+    entries: list[OperationalFeedEntry]
+
+
+def _valid_plant(plant: str) -> str:
+    names = {label.upper(): label for _, label, _ in TARGET_STATIONS}
+    aliases = {
+        "KARAJAGI": "ENRICH KARASGI", "KARAJGI": "ENRICH KARASGI",
+        "KARJAGI": "ENRICH KARASGI", "UMRI": "ENRICH ENERGY HIRADGAON",
+        "TULJAPUR": "ENRICH TULJAPUR", "MANDRUP": "ENRICH MANDRUP",
+        "KUMBHARI": "ENRICH ENERGY LTD SOLAR PARK",
+        "BHOKAR PHASE-1": "ENRICH ENERGY BHOKAR",
+        "BHOKAR PHASE-2": "ENRICH SOLAR SERVICES (Narwat)",
+    }
+    names.update(aliases)
+    try:
+        return names[plant.upper()]
+    except KeyError as exc:
+        raise HTTPException(400, detail="Unknown SLDC plant") from exc
+
+
+@app.get("/api/sldc/live")
+def live(response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return db.latest()
+
+
+@app.get("/api/sldc/samples")
+def samples(plant: str, start: datetime, end: datetime):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    return db.samples(_valid_plant(plant), start, end)
+
+
+@app.get("/api/sldc/availability")
+def availability(plant: str, start: datetime, end: datetime,
+                 group_by: str = Query("day", pattern="^(day|month|none)$")):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    return db.availability(_valid_plant(plant), start, end, group_by)
+
+
+@app.get("/api/sldc/fleet-availability")
+def fleet_availability(start: datetime, end: datetime):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    return db.fleet_availability(start, end)
+
+
+@app.get("/api/sldc/incidents/active")
+def active_sldc_incidents(start: datetime, end: datetime):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    return db.active_communication_incidents(start, end)
+
+
+@app.get("/api/sldc/generation")
+def generation(plant: str, start: datetime, end: datetime,
+               group_by: str = Query("day", pattern="^(day|month|none)$")):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    canonical = _valid_plant(plant)
+    return db.generation_report([canonical], start, end, group_by)
+
+
+@app.get("/api/sldc/communication")
+def communication(plant: str, start: datetime, end: datetime):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    canonical = _valid_plant(plant)
+    return db.communication_report([canonical], start, end)
+
+
+def _excel_sheet(workbook: Workbook, title: str, headers: list[str], rows: list[list]):
+    sheet = workbook.create_sheet(title)
+    sheet.append(headers)
+    header_fill = PatternFill("solid", fgColor="0B5C94")
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center")
+    for row in rows:
+        sheet.append(row)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column in sheet.columns:
+        width = min(45, max(11, max(len(str(cell.value or "")) for cell in column) + 2))
+        sheet.column_dimensions[column[0].column_letter].width = width
+    return sheet
+
+
+@app.get("/api/sldc/report.xlsx")
+def excel_report(plant: str, start: datetime, end: datetime):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    canonical = _valid_plant(plant)
+    samples = db.samples(canonical, start, end)
+    availability = db.availability(canonical, start, end, "day")
+    generation = db.generation_report([canonical], start, end, "day")
+    communication = db.communication_report([canonical], start, end)
+
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Summary"
+    summary_rows = [
+        ("Plant", canonical),
+        ("From", start.strftime("%Y-%m-%d %H:%M:%S")),
+        ("To", end.strftime("%Y-%m-%d %H:%M:%S")),
+        ("Estimated generation (MWh)", round(sum(row["EstimatedGenerationMWh"] for row in generation), 3)),
+        ("15-minute logs", len(samples)),
+        ("Unavailable slots", sum(row["UnavailableSamples"] for row in availability)),
+        ("Negative MW rule", "Displayed in logs; treated as 0 only in generation totals"),
+    ]
+    for row in summary_rows:
+        summary.append(row)
+    summary["A1"].font = Font(bold=True, color="38BAFF")
+    summary.column_dimensions["A"].width = 31
+    summary.column_dimensions["B"].width = 62
+
+    _excel_sheet(workbook, "Daily Performance",
+        ["Date", "Estimated Generation (MWh)", "Average MW", "Minimum MW", "Maximum MW",
+         "Available Samples", "Expected Samples", "Availability (%)"],
+        [[row["Period"], row["EstimatedGenerationMWh"], row["AverageMW"], row["MinimumMW"],
+          row["MaximumMW"], row["AvailableSamples"], row["ExpectedSamples"],
+          row["AvailabilityPercent"]] for row in generation])
+    _excel_sheet(workbook, "Communication Issues",
+        ["Issue Start", "Issue End", "Duration (minutes)", "Lost 15-min Slots", "Issue"],
+        [[row["StartTime"], row["EndTime"], row["DurationMinutes"], row["LostSamples"], row["Issue"]]
+         for row in communication])
+    _excel_sheet(workbook, "15-minute Logs",
+        ["Sample Time", "Power (MW)", "Communication", "SLDC Status", "Issue Detail",
+         "Source Timestamp", "Collected At"],
+        [[row["SampleTime"], row["MW"], "Available" if row["IsAvailable"] else "Unavailable",
+          row["Status"], row["CommunicationIssue"] or row["DashboardStatus"],
+          row["SourceTimestamp"], row["CollectedAt"]] for row in samples])
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    safe_plant = re.sub(r"[^A-Za-z0-9]+", "_", canonical).strip("_")
+    filename = f"{safe_plant}_{start:%Y%m%d}_{end:%Y%m%d}_SLDC_Report.xlsx"
+    return StreamingResponse(output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "Cache-Control": "no-store"})
+
+
+def _weather_response(url: str, params: dict):
+    try:
+        result = requests.get(url, params=params, timeout=20)
+        result.raise_for_status()
+        return result.json()
+    except (requests.RequestException, ValueError) as exc:
+        detail = "Live weather provider unavailable"
+        if getattr(exc, "response", None) is not None:
+            try:
+                detail = exc.response.json().get("reason", detail)
+            except ValueError:
+                pass
+        raise HTTPException(502, detail=detail) from exc
+
+
+@app.get("/api/weather/forecast")
+def weather_forecast(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180)):
+    current = WEATHER_HOURLY + ",is_day,showers"
+    return _weather_response("https://api.open-meteo.com/v1/forecast", {
+        "latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata",
+        "current": current, "hourly": WEATHER_HOURLY, "daily": WEATHER_DAILY,
+        "forecast_days": 7,
+    })
+
+
+@app.get("/api/weather/history")
+def weather_history(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180),
+                    start_date: date = Query(), end_date: date = Query()):
+    if end_date < start_date:
+        raise HTTPException(400, detail="end_date must be on or after start_date")
+    if (end_date - start_date).days > 366:
+        raise HTTPException(400, detail="Historical range cannot exceed 366 days")
+    return _weather_response("https://archive-api.open-meteo.com/v1/archive", {
+        "latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata",
+        "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
+        "hourly": WEATHER_HOURLY,
+    })
+
+
+@app.post("/api/operations/feed")
+def save_operational_feed(batch: OperationalFeedBatch):
+    now = datetime.now()
+    rows = []
+    for entry in batch.entries[:100]:
+        event_time = entry.timestamp
+        if entry.event_type == "alarm" and entry.source == "MH SLDC":
+            try:
+                canonical = _valid_plant(entry.plant)
+                if now >= _incident_cache["expires"]:
+                    start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    _incident_cache["rows"] = db.active_communication_incidents(start, now)
+                    _incident_cache["expires"] = now + timedelta(seconds=5)
+                incident = next((row for row in _incident_cache["rows"] if row["Plant"] == canonical), None)
+                if incident and entry.message.startswith(incident["Issue"]):
+                    event_time = datetime.fromisoformat(incident["StartTime"])
+            except HTTPException:
+                pass
+        raw = f"{entry.event_type}|{entry.plant}|{entry.message}|{entry.severity}|{entry.source}|{event_time.isoformat()}"
+        rows.append({
+            "EventKey": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            "EventType": entry.event_type,
+            "PlantName": entry.plant,
+            "Message": entry.message,
+            "Severity": entry.severity,
+            "SourceName": entry.source,
+            "EventTime": event_time,
+            "CreatedAt": now,
+        })
+    return {"stored": db.save_operational_events(rows), "received": len(rows)}
+
+
+@app.get("/api/operations/logs")
+def operational_logs(start: datetime, end: datetime,
+                     event_type: str = Query("all", pattern="^(all|alarm|event)$"),
+                     plant: str | None = None, severity: str | None = None,
+                     limit: int = Query(500, ge=1, le=2000)):
+    if end <= start:
+        raise HTTPException(400, detail="end must be later than start")
+    return db.operational_events(start, end, event_type, plant, severity, limit)
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "database": db.kind,
+        "sampleDatabase": db.sample_kind,
+        "sampleCollection": f"{settings.mongodb_database}.{settings.mongodb_collection}" if settings.mongodb_uri else "SLDC_DB",
+        "collectorRunning": bool(collector.thread and collector.thread.is_alive()),
+    }
+
+
+if DIST.exists():
+    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def react_app(path: str):
+        candidate = (DIST / path).resolve()
+        if path and candidate.is_file() and DIST.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(DIST / "index.html", headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        })
+else:
+    @app.get("/", include_in_schema=False)
+    def missing_build():
+        return {"message": "Run npm run build before starting the integrated server."}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("server:app", host=settings.api_host, port=settings.api_port, reload=False)
