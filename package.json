@@ -8,8 +8,13 @@
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+<<<<<<< HEAD
     "serve": "python server.py",
     "start": "npm run build && python server.py"
+=======
+    "serve": ".venv\\Scripts\\python.exe server.py",
+    "start": "npm run build && .venv\\Scripts\\python.exe server.py"
+>>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

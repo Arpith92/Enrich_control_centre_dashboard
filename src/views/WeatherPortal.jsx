@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import { useCallback, useMemo, useState } from 'react'
+=======
+import { useCallback, useMemo, useRef, useState } from 'react'
+>>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
 import ReactECharts from 'echarts-for-react'
 import {
   Air, ArrowBack, CloudOutlined, Compress, DeviceThermostat, History,
@@ -51,14 +55,26 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
   const [fromDate, setFromDate] = useState(shiftDays(-6))
   const [toDate, setToDate] = useState(today)
   const [historyCriteria, setHistoryCriteria] = useState({ from: shiftDays(-6), to: today })
+<<<<<<< HEAD
   const [metric, setMetric] = useState('temperature_2m')
   const [payload, setPayload] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+=======
+  const [metric, setMetric] = useState('global_tilted_irradiance')
+  const [payload, setPayload] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const requestSequence = useRef(0)
+>>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
   const plant = plants.find((item) => item.id === selectedId) || plants[0]
 
   const load = useCallback(async () => {
     if (!plant) return
+<<<<<<< HEAD
+=======
+    const requestId = ++requestSequence.current
+>>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
     setLoading(true)
     setError('')
     const params = new URLSearchParams({ lat: plant.lat, lon: plant.lon })
@@ -72,6 +88,7 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail.detail || `Weather API returned ${response.status}`)
       }
+<<<<<<< HEAD
       setPayload(await response.json())
     } catch (requestError) {
       setError(requestError.message || 'Weather data unavailable')
@@ -82,6 +99,22 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
   }, [plant, mode, historyCriteria])
 
   useAutoRefresh(load, mode === 'forecast' ? 60000 : 300000)
+=======
+      const nextPayload = await response.json()
+      if (requestId === requestSequence.current) setPayload(nextPayload)
+    } catch (requestError) {
+      if (requestId === requestSequence.current) {
+        setError(requestError.message || 'Weather data unavailable')
+        setPayload(null)
+      }
+    } finally {
+      if (requestId === requestSequence.current) setLoading(false)
+    }
+  }, [plant, mode, historyCriteria])
+
+  useAutoRefresh(load, mode === 'forecast' ? 60000 : 300000,
+    `${selectedId}|${mode}|${historyCriteria.from}|${historyCriteria.to}`)
+>>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
 
   const rows = useMemo(() => hourlyRows(payload?.hourly), [payload])
   const visibleRows = useMemo(() => mode === 'forecast'

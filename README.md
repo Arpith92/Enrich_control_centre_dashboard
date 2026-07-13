@@ -64,6 +64,7 @@ npm run lint
 npm run build
 pytest -q tests
 ```
+<<<<<<< HEAD
 
 ## Docker
 
@@ -83,3 +84,5 @@ docker compose up --build
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` runner and verifies `npm run lint`, `npm run build`, `docker build`, and `pytest -q tests` on every push and pull request.
 
 GitHub-hosted runners are ephemeral, so they are great for CI checks but not for keeping the app running continuously. Use Docker Compose or a VM/server for actual hosting.
+=======
+>>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
