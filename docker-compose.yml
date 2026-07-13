@@ -3,6 +3,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - sldc/.env
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 5173
+      CHROME_BINARY: /usr/bin/chromium
+      CHROMEDRIVER_PATH: /usr/bin/chromedriver
+      TESSERACT_CMD: /usr/bin/tesseract
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - control-centre
     ports:
-      - "5173:5173"
+      - "8081:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     restart: unless-stopped

@@ -64,7 +64,6 @@ npm run lint
 npm run build
 pytest -q tests
 ```
-<<<<<<< HEAD
 
 ## Docker
 
@@ -75,14 +74,22 @@ docker build -t enrich-control-centre .
 docker run --rm -p 5173:5173 --env-file sldc/.env enrich-control-centre
 ```
 
-If you prefer Compose:
+If you prefer Compose with Nginx in front of the app:
 
 ```powershell
 docker compose up --build
 ```
 
+This starts two containers:
+- `control-centre` on the internal Docker network
+- `nginx` exposed on port `8081` and proxying to the app container
+
+Open the app at:
+
+```text
+http://192.168.41.197:8081
+```
+
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` runner and verifies `npm run lint`, `npm run build`, `docker build`, and `pytest -q tests` on every push and pull request.
 
 GitHub-hosted runners are ephemeral, so they are great for CI checks but not for keeping the app running continuously. Use Docker Compose or a VM/server for actual hosting.
-=======
->>>>>>> 23b0ecad43258afe71a144fbed8b528015030979
