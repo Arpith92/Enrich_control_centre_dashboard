@@ -9,13 +9,10 @@ lerna-debug.log*
 
 node_modules
 .venv/
-dist
 dist-ssr
 *.local
-*.db
 __pycache__/
 .pytest_cache/
-sldc/.env
 sldc/logs/
 
 # Editor directories and files
