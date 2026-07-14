@@ -43,6 +43,7 @@ export default function useSldcData() {
   const [loading, setLoading] = useState(true)
   const [lastSync, setLastSync] = useState(null)
   const [todayAvailability, setTodayAvailability] = useState(null)
+  const [siteAvailability, setSiteAvailability] = useState({})
   const [activeIncidents, setActiveIncidents] = useState([])
   const [incidentsReady, setIncidentsReady] = useState(false)
 
@@ -69,11 +70,27 @@ export default function useSldcData() {
     start.setHours(0, 0, 0, 0)
     const params = new URLSearchParams({ start: localIso(start), end: localIso(end) })
     try {
-      const response = await fetch(`/api/sldc/fleet-availability?${params}`, { cache: 'no-store' })
-      if (!response.ok) throw new Error(`Availability API returned ${response.status}`)
-      setTodayAvailability(await response.json())
+      const [fleetResponse, ...siteResponses] = await Promise.all([
+        fetch(`/api/sldc/fleet-availability?${params}`, { cache: 'no-store' }),
+        ...EXPECTED_SITES.map(([plant]) => {
+          const siteParams = new URLSearchParams(params)
+          siteParams.set('plant', plant)
+          siteParams.set('group_by', 'none')
+          return fetch(`/api/sldc/availability?${siteParams}`, { cache: 'no-store' })
+        }),
+      ])
+      if (!fleetResponse.ok || siteResponses.some((response) => !response.ok)) {
+        throw new Error('Availability API request failed')
+      }
+      const [fleet, ...siteRows] = await Promise.all([
+        fleetResponse.json(),
+        ...siteResponses.map((response) => response.json()),
+      ])
+      setTodayAvailability(fleet)
+      setSiteAvailability(Object.fromEntries(EXPECTED_SITES.map(([plant], index) => [plant, siteRows[index]?.[0] || null])))
     } catch {
       setTodayAvailability(null)
+      setSiteAvailability({})
     }
   }, [])
 
@@ -111,6 +128,7 @@ export default function useSldcData() {
       offlineSites: sites.filter((site) => !isCommunicating(site)),
       totalGeneration,
       todayAvailability,
+      siteAvailability,
       activeIncidents,
       incidentsReady,
       totalCapacity: sites.reduce((sum, site) => sum + (Number(site.InstalledCapacity) || 0), 0),
@@ -121,5 +139,5 @@ export default function useSldcData() {
       refresh,
       isCommunicating,
     }
-  }, [sites, loading, error, lastSync, refresh, todayAvailability, activeIncidents, incidentsReady])
+  }, [sites, loading, error, lastSync, refresh, todayAvailability, siteAvailability, activeIncidents, incidentsReady])
 }

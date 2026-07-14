@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "oxlint",
+    "lint": "oxlint --react-plugin --ignore-pattern \"dist/**\"",
     "preview": "vite preview",
     "serve": "python server.py",
     "start": "npm run build && python server.py"

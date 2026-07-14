@@ -241,11 +241,17 @@ class Database:
     def samples(self, plant: str, start: datetime, end: datetime) -> list[dict]:
         """Return 15-minute samples for a station in [start, end)."""
         if self.sample_collection is not None:
+            # Collector slots are UTC; report criteria and display are IST.
+            ist_offset = timedelta(hours=5, minutes=30)
+            utc_start = start - ist_offset
+            utc_end = end - ist_offset
             documents = self.sample_collection.find(
-                {"PlantName": plant, "SampleTime": {"$gte": start, "$lt": end}},
+                {"PlantName": plant, "SampleTime": {"$gte": utc_start, "$lt": utc_end}},
                 {"_id": 0}).sort("SampleTime", 1)
 
-            def stamp(value):
+            def stamp(value, localize=False):
+                if value and localize:
+                    value += ist_offset
                 return value.strftime("%Y-%m-%d %H:%M:%S") if value else None
 
             return [{"Plant": row["PlantName"],
@@ -254,9 +260,9 @@ class Database:
                      "DashboardStatus": row.get("DashboardStatus"),
                      "IsAvailable": bool(row.get("IsAvailable")),
                      "CommunicationIssue": row.get("CommunicationIssue"),
-                     "SampleTime": stamp(row.get("SampleTime")),
+                     "SampleTime": stamp(row.get("SampleTime"), True),
                      "SourceTimestamp": stamp(row.get("SourceTimestamp")),
-                     "CollectedAt": stamp(row.get("CollectedAt"))} for row in documents]
+                     "CollectedAt": stamp(row.get("CollectedAt"), True)} for row in documents]
         table = "dbo.SLDC_DB" if self.kind == "sqlserver" else "SLDC_DB"
         with self.connect() as con:
             rows = con.cursor().execute(f"""SELECT PlantName,InstalledCapacity,CurrentMW,

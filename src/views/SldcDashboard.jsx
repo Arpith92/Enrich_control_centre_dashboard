@@ -6,7 +6,7 @@ import SldcReports from '../components/SldcReports'
 const number = (value, digits = 1) => Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: digits, minimumFractionDigits: digits })
 
 export default function SldcDashboard({ data, onBack, openReports = false }) {
-  const { sites, onlineSites, offlineSites, totalGeneration, totalCapacity, latestTimestamp, error, lastSync, refresh, isCommunicating } = data
+  const { sites, onlineSites, offlineSites, totalGeneration, totalCapacity, latestTimestamp, error, lastSync, refresh, isCommunicating, siteAvailability } = data
   const [selectedPlant, setSelectedPlant] = useState('ENRICH KARASGI')
   const reportRef = useRef(null)
   const showReport = (plant = selectedPlant) => {
@@ -40,12 +40,14 @@ export default function SldcDashboard({ data, onBack, openReports = false }) {
       <div className="sldc-station-grid">
         {sites.map((site) => {
           const online = isCommunicating(site)
+          const availability = siteAvailability?.[site.Plant]
           return <article className={`sldc-station ${online ? 'online' : 'offline'} ${selectedPlant === site.Plant ? 'selected' : ''}`} key={site.Plant} role="button" tabIndex={0} onClick={() => showReport(site.Plant)} onKeyDown={(event) => event.key === 'Enter' && showReport(site.Plant)}>
             <div className="station-top"><i /><span>{online ? 'COMMUNICATION OK' : 'COMMUNICATION FAILURE'}</span></div>
+            <div className="station-availability"><span>TODAY AVAILABILITY</span><b>{availability ? number(availability.AvailabilityPercent, 2) : '—'}<small>%</small></b></div>
             <h3>{SLDC_DISPLAY_NAMES[site.Plant] || site.Plant}</h3>
             <p>{site.DashboardStatus || site.Status}</p>
             <div className="station-reading"><b>{online ? number(site.MW) : '—'}</b><span>MW</span></div>
-            <footer><span>IC {number(site.InstalledCapacity, 2)} MW</span><span>Click for reports →</span></footer>
+            <footer><span>IC {number(site.InstalledCapacity, 2)} MW</span></footer>
           </article>
         })}
       </div>
