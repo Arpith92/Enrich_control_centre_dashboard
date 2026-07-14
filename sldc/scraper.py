@@ -4,6 +4,7 @@ from datetime import datetime
 from io import BytesIO
 import hashlib
 from html import unescape
+import os
 import re
 import time
 import requests
@@ -11,6 +12,7 @@ from urllib.parse import urljoin
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from .config import settings
 from .logger import get_logger
@@ -51,7 +53,12 @@ class SLDCScraper:
         options.add_argument("--window-size=1920,1080")
         options.page_load_strategy = "eager"
         options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 1})
-        self.driver = webdriver.Chrome(options=options)  # Selenium Manager locates a compatible driver.
+        chrome_binary = os.getenv("CHROME_BINARY")
+        chromedriver_path = os.getenv("CHROMEDRIVER_PATH")
+        if chrome_binary:
+            options.binary_location = chrome_binary
+        service = Service(chromedriver_path) if chromedriver_path else Service()
+        self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.set_page_load_timeout(settings.page_load_timeout)
         self.driver.get(settings.sldc_url)
 

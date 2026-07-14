@@ -28,7 +28,7 @@ class Settings:
     api_port: int = int(os.getenv("API_PORT", "10002"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_path: Path = BASE_DIR / "logs" / "enrich_solar.log"
-    tesseract_cmd: str = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    tesseract_cmd: str = os.getenv("TESSERACT_CMD", "/usr/bin/tesseract")
 
 
 settings = Settings()

@@ -8,8 +8,8 @@
     "build": "vite build",
     "lint": "oxlint --react-plugin --ignore-pattern dist/**",
     "preview": "vite preview",
-    "serve": ".venv\\Scripts\\python.exe server.py",
-    "start": "npm run build && .venv\\Scripts\\python.exe server.py"
+    "serve": "python server.py",
+    "start": "npm run build && python server.py"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
