@@ -42,4 +42,4 @@ jobs:
         run: docker build -t enrich-control-centre:ci .
 
       - name: Run tests
-        run: pytest -q tests
+        run: python -m pytest -q tests
