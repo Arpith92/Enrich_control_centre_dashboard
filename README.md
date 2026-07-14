@@ -89,3 +89,25 @@ http://192.168.41.197:8081
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` runner and verifies `npm run lint`, `npm run build`, `docker build`, and `pytest -q tests` on every push and pull request.
 
 GitHub-hosted runners are ephemeral, so they are great for CI checks but not for keeping the app running continuously. Use Docker Compose or a VM/server for actual hosting.
+
+## Self-hosted runner on the workstation
+
+If you want the workstation that already hosts the app to update itself after pushes to `main`, install a self-hosted Windows runner on that workstation.
+
+1. In GitHub, open the repository and go to `Settings > Actions > Runners`.
+1. Click `New self-hosted runner`.
+1. Select `Windows` and `x64`.
+1. Download the runner on the workstation and extract it to `C:\actions-runner`.
+1. Open PowerShell as Administrator in that folder.
+1. Run the registration commands GitHub shows you.
+1. Install and start the runner service.
+1. Confirm the runner shows `Connected to GitHub` and `Listening for Jobs`.
+
+The deploy workflow in `.github/workflows/deploy-workstation.yml` runs on that self-hosted runner and executes:
+
+```powershell
+docker compose down
+docker compose up -d --build
+```
+
+GitHub Docs notes that Windows runner setup should be done from an administrator shell if you install it as a service, and `C:\actions-runner` is the recommended directory. The registration token GitHub gives you expires after one hour. Source: [GitHub Docs: Add self-hosted runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners).
