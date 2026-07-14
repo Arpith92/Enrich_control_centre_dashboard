@@ -3,6 +3,12 @@ import { Assessment, CalendarMonth, FileDownload, Refresh, Timeline, WarningAmbe
 import { SLDC_DISPLAY_NAMES } from '../hooks/useSldcData'
 import useAutoRefresh from '../hooks/useAutoRefresh'
 
+const LOG_COLUMNS = [
+  ['SampleTime', 'Sample time'], ['MW', 'Power'], ['IsAvailable', 'Communication'],
+  ['Status', 'SLDC status'], ['CommunicationIssue', 'Issue detail'],
+  ['SourceTimestamp', 'Source timestamp'], ['CollectedAt', 'Collected at'],
+]
+
 const localDate = (date = new Date()) => {
   const offset = date.getTimezoneOffset() * 60000
   return new Date(date.getTime() - offset).toISOString().slice(0, 10)
@@ -40,6 +46,7 @@ export default function SldcReports({ plants, selectedPlant, onPlantChange, repo
   const [report, setReport] = useState({ samples: [], availability: [], generation: [], communication: [] })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [logSort, setLogSort] = useState({ key: 'SampleTime', direction: 'desc' })
 
   const loadReport = useCallback(async () => {
     if (!selectedPlant) return
@@ -78,6 +85,20 @@ export default function SldcReports({ plants, selectedPlant, onPlantChange, repo
       unavailable: report.availability.reduce((sum, row) => sum + row.UnavailableSamples, 0),
     }
   }, [report])
+
+  const sortedSamples = useMemo(() => [...report.samples].sort((left, right) => {
+    const leftValue = left[logSort.key]
+    const rightValue = right[logSort.key]
+    const comparison = typeof leftValue === 'number' && typeof rightValue === 'number'
+      ? leftValue - rightValue
+      : String(leftValue ?? '').localeCompare(String(rightValue ?? ''), undefined, { numeric: true })
+    return logSort.direction === 'asc' ? comparison : -comparison
+  }), [report.samples, logSort])
+
+  const sortLogs = (key) => setLogSort((current) => ({
+    key,
+    direction: current.key === key && current.direction === 'desc' ? 'asc' : 'desc',
+  }))
 
   const applyDates = (event) => {
     event.preventDefault()
@@ -149,8 +170,8 @@ export default function SldcReports({ plants, selectedPlant, onPlantChange, repo
 
     <div className="sldc-report-block">
       <h3><Assessment /> 15-minute SLDC logs</h3>
-      <div className="sldc-table-scroll logs"><table><thead><tr><th>Sample time</th><th>Power</th><th>Communication</th><th>SLDC status</th><th>Issue detail</th><th>Source timestamp</th><th>Collected at</th></tr></thead><tbody>
-        {report.samples.map((row) => <tr key={row.SampleTime}><td>{displayTime(row.SampleTime)}</td><td><strong>{mw(row.MW)} MW</strong></td><td><b className={row.IsAvailable ? 'good' : 'bad'}>{row.IsAvailable ? 'Available' : 'Unavailable'}</b></td><td>{row.Status || '—'}</td><td>{row.CommunicationIssue || row.DashboardStatus || '—'}</td><td>{displayTime(row.SourceTimestamp)}</td><td>{displayTime(row.CollectedAt)}</td></tr>)}
+      <div className="sldc-table-scroll logs"><table><thead><tr>{LOG_COLUMNS.map(([key, label]) => <th key={key}><button type="button" className={logSort.key === key ? 'active' : ''} onClick={() => sortLogs(key)}>{label}<span>{logSort.key === key ? (logSort.direction === 'desc' ? '▼' : '▲') : '↕'}</span></button></th>)}</tr></thead><tbody>
+        {sortedSamples.map((row) => <tr key={row.SampleTime}><td>{displayTime(row.SampleTime)}</td><td><strong>{mw(row.MW)} MW</strong></td><td><b className={row.IsAvailable ? 'good' : 'bad'}>{row.IsAvailable ? 'Available' : 'Unavailable'}</b></td><td>{row.Status || '—'}</td><td>{row.CommunicationIssue || row.DashboardStatus || '—'}</td><td>{displayTime(row.SourceTimestamp)}</td><td>{displayTime(row.CollectedAt)}</td></tr>)}
         {!report.samples.length && <tr><td colSpan="7" className="empty-report">{loading ? 'Loading 15-minute logs…' : 'No stored 15-minute logs for this period'}</td></tr>}
       </tbody></table></div>
     </div>

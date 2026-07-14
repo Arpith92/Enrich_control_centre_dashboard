@@ -25,7 +25,7 @@ class Settings:
     allow_sqlite_fallback: bool = _bool("ALLOW_SQLITE_FALLBACK", True)
     sqlite_path: Path = BASE_DIR / os.getenv("SQLITE_PATH", "enrich_solar.db")
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
-    api_port: int = int(os.getenv("API_PORT", "5173"))
+    api_port: int = int(os.getenv("API_PORT", "10002"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_path: Path = BASE_DIR / "logs" / "enrich_solar.log"
     tesseract_cmd: str = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
