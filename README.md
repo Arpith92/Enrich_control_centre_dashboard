@@ -1,4 +1,4 @@
-# Enrich Solar Control Centre
+l# Enrich Solar Control Centre
 
 React control-centre dashboard with the Maharashtra SLDC Data Scout integrated into the same application and port.
 
@@ -9,10 +9,6 @@ React control-centre dashboard with the Maharashtra SLDC Data Scout integrated i
 - Full React SLDC dashboard opened from the summary visual or SLDC navigation item
 - Combined generation/export calculated from communicating SLDC sites
 - Integrated FastAPI collector, historical storage, availability API, and React static hosting
-- Persistent alarm/event history with lifecycle-based communication incidents
-- Site weather portal with live forecasts and historical hourly data
-- Filterable SLDC reports with Excel export
-- Automatic refresh, focus recovery, and network-reconnection refresh across live views
 
 ## Setup
 
@@ -41,21 +37,21 @@ Open `http://localhost:5173`. The same process serves the React application and 
 - `GET /api/sldc/live`
 - `GET /api/sldc/samples`
 - `GET /api/sldc/availability`
-- `GET /api/sldc/fleet-availability`
-- `GET /api/sldc/incidents/active`
-- `GET /api/sldc/report.xlsx`
-- `GET /api/operations/logs`
-- `GET /api/weather/forecast`
-- `GET /api/weather/history`
 - `GET /health`
 
-The simulated plant telemetry remains enabled. Live MH SLDC, weather, reports, communication incidents, availability, alarms, and events refresh automatically without requiring the browser refresh button.
-
-## Production configuration
-
-Do not commit `sldc/.env`. Create it from `sldc/.env.example` on the production host and supply the database connection, Tesseract path, and port there. Runtime databases, logs, virtual environments, dependencies, and generated frontend builds are ignored by Git.
-
 For frontend-only development, `npm run dev` still provides Vite hot reload, but live integrated API data is available through the one-port `npm start` command.
+
+## Two-port development
+
+Run the backend and frontend in separate terminals:
+
+```powershell
+npm run serve
+npm run dev
+```
+
+Open `http://localhost:10001`. Vite proxies API requests to the backend at
+`http://localhost:10002`.
 
 ## Tests
 
