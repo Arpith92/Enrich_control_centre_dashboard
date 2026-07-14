@@ -1,0 +1,21 @@
+name: Deploy to Workstation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, windows, x64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Stop existing containers
+        run: docker compose down
+
+      - name: Build and start containers
+        run: docker compose up -d --build
