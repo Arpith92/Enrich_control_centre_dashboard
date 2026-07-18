@@ -38,8 +38,8 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build Docker image
-        run: docker build -t enrich-control-centre:ci .
-
       - name: Run tests
         run: python -m pytest -q tests
+
+      - name: Build Docker image
+        run: docker build -t enrich-control-centre:ci .
