@@ -107,6 +107,9 @@ export const simulatePlantTelemetry = (plant, now, previousPlant, liveWeather) =
 
   return {
     ...plant,
+    telemetrySource: 'Simulation',
+    cumulativeGenerationMWh: undefined,
+    inverterCount: 0,
     currentMw: plant.name === 'Mundargi' ? 0 : Number(nextMw.toFixed(2)),
     todayMwh: Number(todayMwh.toFixed(2)),
     pr: Number(pr.toFixed(1)),

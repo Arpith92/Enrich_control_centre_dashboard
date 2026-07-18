@@ -18,6 +18,7 @@ from sldc.database import db
 from sldc.config import settings
 from sldc.parser import TARGET_STATIONS
 from sldc.scheduler import collector
+from sldc.scada_realtime import scada_reader
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
@@ -84,6 +85,25 @@ def _valid_plant(plant: str) -> str:
 def live(response: Response):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return db.latest()
+
+
+@app.get("/api/scada/live")
+def scada_live(response: Response):
+    """Latest summed INV1..INV20 readings, grouped by configured site."""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    try:
+        return scada_reader.latest()
+    except Exception as exc:
+        raise HTTPException(503, detail="SCADA MongoDB unavailable") from exc
+
+
+@app.get("/api/scada/sites/{site_name}")
+def scada_site_details(site_name: str, response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    details = scada_reader.site_details(site_name)
+    if details is None:
+        raise HTTPException(404, detail="SCADA site is not configured")
+    return details
 
 
 @app.get("/api/sldc/samples")

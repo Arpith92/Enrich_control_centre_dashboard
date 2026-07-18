@@ -19,13 +19,45 @@ export const SimulationDataProvider = ({ children }) => {
   const [siteWeather, setSiteWeather] = useState({})
   const [weatherUpdatedAt, setWeatherUpdatedAt] = useState(null)
   const weatherRef = useRef({})
+  const scadaRef = useRef({})
+
+  const applyRealtime = useCallback((plant) => {
+    const live = scadaRef.current[plant.name.toLowerCase()]
+    if (!live) return plant
+    const feedExpired = Date.now() - Number(live.receivedAt || 0) > 180000
+    if (!live.live || feedExpired || !Number.isFinite(Number(live.currentMw))) {
+      return {
+        ...plant,
+        currentMw: 0,
+        telemetrySource: 'SCADA',
+        telemetrySampleType: '1-minute average',
+        communication: 'Failed',
+        communicationIssue: true,
+        inverterCount: 0,
+        lastUpdated: live.timestamp ? dayjs(live.timestamp).format('HH:mm:ss') : 'No current sample',
+      }
+    }
+    return {
+      ...plant,
+      currentMw: Number(live.currentMw),
+      cumulativeGenerationMWh: Number(live.cumulativeGenerationMWh),
+      inverterCount: Number(live.inverterCount) || 0,
+      telemetrySource: 'SCADA',
+      telemetrySampleType: '1-minute average',
+      communication: 'Healthy',
+      communicationIssue: false,
+      lastUpdated: live.timestamp ? dayjs(live.timestamp).format('HH:mm:ss') : dayjs().format('HH:mm:ss'),
+    }
+  }, [])
 
   useEffect(() => {
     const tick = () => {
       const now = dayjs()
       setClock(now)
       setPlants((prevPlants) => {
-        const nextPlants = prevPlants.map((plant) => simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]))
+        const nextPlants = prevPlants.map((plant) => applyRealtime(
+          simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]),
+        ))
         const nextTrend = createTrendData(nextPlants, now)
         setHistory((prevHistory) => [...prevHistory.slice(-23), nextTrend])
         setEvents(createEventFeed(nextPlants, now))
@@ -36,7 +68,24 @@ export const SimulationDataProvider = ({ children }) => {
     tick()
     const interval = window.setInterval(tick, 2000)
     return () => window.clearInterval(interval)
-  }, [])
+  }, [applyRealtime])
+
+  const loadScada = useCallback(async () => {
+    try {
+      const response = await fetch('/api/scada/live', { cache: 'no-store' })
+      if (!response.ok) throw new Error(`SCADA API ${response.status}`)
+      const payload = await response.json()
+      scadaRef.current = Object.fromEntries(
+        (payload.sites || []).map((site) => [site.name.toLowerCase(), { ...site, receivedAt: Date.now() }]),
+      )
+      setPlants((current) => current.map(applyRealtime))
+    } catch (error) {
+      console.warn('Real-time SCADA unavailable; using simulation values.', error)
+    }
+  }, [applyRealtime])
+
+  // Source collections contain one-minute averages; do not query them faster.
+  useAutoRefresh(loadScada, 60000)
 
   const loadWeather = useCallback(async () => {
       try {
@@ -129,7 +178,8 @@ export const SimulationDataProvider = ({ children }) => {
   const refreshData = () => {
     const now = dayjs()
     setClock(now)
-    setPlants((prevPlants) => prevPlants.map((plant) => simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id])))
+    loadScada()
+    setPlants((prevPlants) => prevPlants.map((plant) => applyRealtime(simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]))))
     setEvents(createEventFeed(plants, now))
   }
 

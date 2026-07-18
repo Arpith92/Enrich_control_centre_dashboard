@@ -11,10 +11,12 @@ import IndiaMap from './components/IndiaMap'
 import SldcStatusCard from './components/SldcStatusCard'
 import SldcDashboard from './views/SldcDashboard'
 import OperationsLog from './views/OperationsLog'
+import BhokarDashboard from './views/BhokarDashboard'
 import useSldcData from './hooks/useSldcData'
 import useOperationalFeed from './hooks/useOperationalFeed'
 import { SimulationDataProvider, useSimulationData } from './context/SimulationDataProvider'
 import enrichLogo from './assets/enrich-logo.png'
+import { simulateThirdPartyCustomers } from './data/thirdPartySites'
 import './App.css'
 import './precision.css'
 
@@ -22,7 +24,7 @@ const WeatherPortal = lazy(() => import('./views/WeatherPortal'))
 
 const fmt = (n, digits = 1) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: digits })
 const viewFromHash = () => ({
-  '#operations-log': 'Operations', '#sldc-reports': 'Reports', '#sldc': 'SLDC', '#weather': 'Weather',
+  '#operations-log': 'Operations', '#sldc-reports': 'Reports', '#sldc': 'SLDC', '#weather': 'Weather', '#bhokar': 'Bhokar',
 }[window.location.hash] || 'Dashboard')
 const Panel = ({ title, children, className = '' }) => <section className={`ops-panel ${className}`}><h3>{title}</h3>{children}</section>
 const getPrecipitationMm = (weather) => Number(weather?.precipitation_mm ?? weather?.precipitation ?? weather?.rain ?? 0)
@@ -52,8 +54,6 @@ const Header = ({ clock }) => <header className="ops-header">
 
 const Kpis = ({ m }) => {
   const cards = [
-    ['TOTAL PLANTS', m.totalPlants, '', SolarPower, `Online ${m.onlinePlants}   Offline ${m.offlinePlants}`],
-    ['INSTALLED CAPACITY', fmt(m.totalCapacity, 2), ' MW', Bolt, 'AC Capacity'],
     ['CURRENT GENERATION', fmt(m.currentGeneration, 2), ' MW', EnergySavingsLeaf, `${((m.currentGeneration / m.totalCapacity) * 100).toFixed(2)}% of Capacity`],
     ["TODAY'S GENERATION", fmt(m.todayGeneration, 2), ' MWh', Bolt, 'Updated live'],
     ["TODAY'S REVENUE", `₹ ${fmt(m.revenue, 2)}`, ' Cr', AccountBalanceWallet, '@ ₹4.20 / kWh'],
@@ -67,10 +67,28 @@ const Kpis = ({ m }) => {
     <div className="ops-kpi" key={label}><Icon /><div><span>{label}</span><b>{value}<small>{unit}</small></b><em>{note}</em></div></div>)}</div>
 }
 
-const Gauge = ({ m }) => {
-  const pct = Math.min(100, m.currentGeneration / m.totalCapacity * 100)
-  return <Panel title="GENERATION OVERVIEW"><div className="semi-gauge" style={{ '--pct': `${pct * 1.8}deg` }}><div><b>{fmt(m.currentGeneration, 2)}</b><span>MW</span></div></div><strong className="gauge-pct">{pct.toFixed(2)}%</strong><small className="capacity-note">of Capacity</small>
-    <div className="mini-rows"><span>Today's Target <b>2,150.00 MWh</b></span><span>Yesterday Generation <b>1,987.40 MWh</b></span><span>This Month <b>32,458.20 MWh</b></span></div></Panel>
+const ThirdPartyPortfolio = () => {
+  const [customers, setCustomers] = useState(() => simulateThirdPartyCustomers())
+  const [active, setActive] = useState(null)
+  useEffect(() => {
+    const interval = window.setInterval(() => setCustomers(simulateThirdPartyCustomers()), 30000)
+    return () => window.clearInterval(interval)
+  }, [])
+  const select = (id) => {
+    const next = active === id ? null : id
+    setActive(next)
+    window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: next }))
+  }
+  const totalCapacity = customers.reduce((sum, customer) => sum + customer.ac, 0)
+  const totalGeneration = customers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
+  return <Panel title="THIRD-PARTY SITES · SIMULATION" className="third-party-portfolio">
+    <div className="portfolio-head"><span>Customer / Sites</span><span>Capacity</span><span>Generation</span></div>
+    <div className="portfolio-rows">{customers.map((customer) => <button className={active === customer.id ? 'active' : ''} key={customer.id} onClick={() => select(customer.id)}>
+      <span><b>{customer.name}</b><small>{customer.plants.length} plants · click to map</small></span><strong>{customer.ac.toFixed(0)} MW</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong>
+    </button>)}</div>
+    <div className="portfolio-total"><span><b>ALL THIRD-PARTY SITES</b><small>{customers.reduce((sum, customer) => sum + customer.plants.length, 0)} plants</small></span><strong>{totalCapacity.toFixed(0)} MW</strong><strong>{totalGeneration.toFixed(2)} MW</strong></div>
+    <small className="portfolio-note">Simulated values · refreshed every 30 seconds</small>
+  </Panel>
 }
 
 const weatherLabel = (code, precipitation = 0) => {
@@ -150,16 +168,19 @@ const DashboardView = () => {
     else if (view === 'Reports') window.location.hash = 'sldc-reports'
     else if (view === 'Operations') window.location.hash = 'operations-log'
     else if (view === 'Weather') window.location.hash = 'weather'
+    else if (view === 'Bhokar') window.location.hash = 'bhokar'
     else if (window.location.hash) history.replaceState(null, '', window.location.pathname)
   }
   return <Box className={`ops-app ${navCollapsed ? 'nav-collapsed' : ''}`}>
     <Nav collapsed={navCollapsed} onToggle={() => setNavCollapsed((value) => !value)} active={activeView === 'Operations' ? 'Alarms' : activeView} onSelect={selectView} />
-    <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' ? 'sldc-main' : ''}><Header clock={clock}/>{activeView === 'Weather'
+    <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' || activeView === 'Bhokar' ? 'sldc-main' : ''}><Header clock={clock}/>{activeView === 'Bhokar'
+      ? <BhokarDashboard onBack={() => selectView('Dashboard')} />
+      : activeView === 'Weather'
       ? <Suspense fallback={<div className="weather-loading">Loading weather portal…</div>}><WeatherPortal plants={plants} liveWeather={siteWeather} onBack={() => selectView('Dashboard')} /></Suspense>
       : activeView === 'Operations' ? <OperationsLog plants={plants} onBack={() => selectView('Dashboard')} />
       : activeView === 'SLDC' || activeView === 'Reports'
       ? <SldcDashboard data={sldc} onBack={() => selectView('Dashboard')} openReports={activeView === 'Reports'} />
-      : <><Kpis m={metrics}/><div className="main-grid"><div className="left-rail"><Gauge m={metrics}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={plants}/><RightRail alarms={liveFeed.alarms} events={liveFeed.events} plants={plants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={plants}/><Footer /></>}
+      : <><Kpis m={metrics}/><div className="main-grid"><div className="left-rail"><ThirdPartyPortfolio/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={plants}/><RightRail alarms={liveFeed.alarms} events={liveFeed.events} plants={plants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={plants}/><Footer /></>}
     </main>
   </Box>
 }
