@@ -24,7 +24,9 @@ class Settings:
     mongodb_collection: str = os.getenv("MONGODB_COLLECTION", "SLDC_DB")
     allow_sqlite_fallback: bool = _bool("ALLOW_SQLITE_FALLBACK", True)
     sqlite_path: Path = BASE_DIR / os.getenv("SQLITE_PATH", "enrich_solar.db")
-    api_host: str = os.getenv("API_HOST", "0.0.0.0")
+    # Bind locally by default so the address shown by Uvicorn is directly
+    # usable in a browser. Docker sets API_HOST=0.0.0.0 explicitly.
+    api_host: str = os.getenv("API_HOST", "127.0.0.1")
     api_port: int = int(os.getenv("API_PORT", "10002"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_path: Path = BASE_DIR / "logs" / "enrich_solar.log"
