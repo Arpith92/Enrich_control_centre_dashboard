@@ -16,6 +16,9 @@ export const thirdPartyCustomers = [
   customer('reliance', 'Reliance Power', 19.02, 75.68, [
     ['LIMBARUI','BHEED',2,2.4],['RUIGAVHAN','BHEED',3,3.6],['KAMKHEDA','BHEED',5,6],['WADVANI','BHEED',5,6],['KAKADHIRA','BHEED',3,3.6],['DEVLA BK.','BHEED',2,2.4],['KEKAT PANGRI','BHEED',1,1.2],['RAKSHASABHUWAN','BHEED',1,1.2],['GULAJ','BHEED',2,2.4],['MIRGAON','BHEED',2,2.4],['BELGAON','BHEED',3,3.6],['SURDI BK.','BHEED',3,3.6],['CHAKLAMBA','BHEED',5,6],['MAHINDA','ASHTI',2,2.4],['POKHARI','ASHTI',4,4.8],['HARINRAYAN','ASHTI',4,4.8],['MHASOBACHIWADI','ASHTI',4,4.8],['DAULAWADGAON','ASHTI',5,6],['TAKALI AMAYA','ASHTI',10,12],['PATTIWADGAON','Ambejogai',4,4.8],['LAMAN TANDA','Ambejogai',2,2.4],['ASARDHAV','Ambejogai',2,2.4],['NATHRA','Ambejogai',3,3.6],['SARADGAON','Ambejogai',2,2.4],
   ]),
+  customer('hero-future', 'Hero Future', 14.77, 77.04, [
+    ['Aurad','Karnataka',40,44],['Chittapur','Karnataka',20,22],['Chamrajnagar','Karnataka',20,22],['Gundlupete','Karnataka',20,22],
+  ]),
 ]
 
 // Coordinates are kept separately so the compact plant table above stays readable.
@@ -27,19 +30,76 @@ const coordinates = {
   ],
   atnu: [[19.471184,78.218099],[20.434868,75.196062],[19.827706,76.404214],[19.002756,76.164448],[19.270447,74.389744],[17.937531,75.668513],[18.577171,75.278112]],
   reliance: [[19.004785,75.679079],[18.6804298,75.6578815],[19.082094,75.705406],[18.9984945,76.0012898],[18.953309,75.584398],[18.947807,75.953622],[19.2786,75.820063],[19.37771,75.6362],[19.366559,75.564548],[19.353177,75.826482],[19.31342,75.714212],[19.2659719,75.748256],[19.2597214,75.504922],[19.089807,75.207476],[18.7389251,75.2940222],[18.7389251,75.2940222],[19.008483,75.040202],[19.046101,74.955608],[18.854967,75.0631223],[18.7085686,76.6829592],[18.7384538,76.3892307],[18.845862,76.259675],[18.9575265,76.4756482],[18.83687,76.6111245]],
+  'hero-future': [[18.18654,77.466461],[16.877121,76.989174],[12.059544,76.961236],[11.939678,76.735493]],
+}
+
+const CONFIG_KEY = 'enrich-third-party-site-config-v1'
+const readConfig = () => {
+  try { return JSON.parse(window.localStorage.getItem(CONFIG_KEY)) || { added: [], removed: [] } }
+  catch { return { added: [], removed: [] } }
+}
+const writeConfig = (config) => {
+  window.localStorage.setItem(CONFIG_KEY, JSON.stringify(config))
+  window.dispatchEvent(new Event('third-party-sites-updated'))
+}
+
+export const addThirdPartySites = (sites) => {
+  const config = readConfig()
+  const added = sites.map((site, index) => ({ ...site, id: site.id || `custom-${Date.now()}-${index}` }))
+  writeConfig({ ...config, added: [...config.added, ...added] })
+}
+
+export const removeThirdPartySite = (siteId) => {
+  const config = readConfig()
+  writeConfig({
+    added: config.added.filter((site) => site.id !== siteId),
+    removed: siteId.startsWith('custom-') ? config.removed : [...new Set([...config.removed, siteId])],
+  })
+}
+
+export const getConfiguredThirdPartyCustomers = () => {
+  const config = readConfig()
+  const removed = new Set(config.removed)
+  const configured = thirdPartyCustomers.map((entry) => ({
+    ...entry,
+    plants: entry.plants.map((plant, index) => ({ ...plant, lat: coordinates[entry.id][index][0], lon: coordinates[entry.id][index][1] })).filter((plant) => !removed.has(plant.id)),
+  })).filter((entry) => entry.plants.length)
+  const additionsByCustomer = new Map()
+  config.added.forEach((site) => {
+    const name = site.customerName.trim()
+    if (!additionsByCustomer.has(name)) additionsByCustomer.set(name, [])
+    additionsByCustomer.get(name).push({ id: site.id, site: site.siteName, cluster: 'Custom', ac: Number(site.ac), dc: Number(site.dc), lat: Number(site.lat), lon: Number(site.lon) })
+  })
+  additionsByCustomer.forEach((newPlants, name) => {
+    let entry = configured.find((item) => item.name.toLowerCase() === name.toLowerCase())
+    if (entry) entry.plants = [...entry.plants, ...newPlants]
+    else {
+      const id = `custom-customer-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+      entry = { id, name, plants: newPlants }
+      configured.push(entry)
+    }
+  })
+  return configured.map((entry) => ({
+    ...entry,
+    lat: entry.plants.reduce((sum, plant) => sum + plant.lat, 0) / entry.plants.length,
+    lon: entry.plants.reduce((sum, plant) => sum + plant.lon, 0) / entry.plants.length,
+  }))
 }
 
 export const simulateThirdPartyCustomers = (date = new Date()) => {
   const hour = date.getHours() + date.getMinutes() / 60
   const solarCurve = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI))
   const tick = Math.floor(date.getTime() / 30000)
-  return thirdPartyCustomers.map((entry, customerIndex) => {
+  return getConfiguredThirdPartyCustomers().map((entry, customerIndex) => {
     const plants = entry.plants.map((plant, plantIndex) => {
       const factor = 0.72 + (((plantIndex * 17 + customerIndex * 11 + tick) % 18) / 100)
       const simulatedMw = plant.ac * solarCurve * factor
-      const [lat, lon] = coordinates[entry.id][plantIndex]
-      return { ...plant, lat, lon, simulatedMw, status: solarCurve === 0 ? 'Standby' : factor < 0.76 ? 'Warning' : 'Generating' }
+      const { lat, lon } = plant
+      const communicationIssue = false
+      return { ...plant, lat, lon, simulatedMw, communicationIssue, status: communicationIssue ? 'Communication issue' : solarCurve === 0 ? 'Standby' : 'Generating' }
     })
-    return { ...entry, plants, ac: plants.reduce((sum, plant) => sum + plant.ac, 0), simulatedMw: plants.reduce((sum, plant) => sum + plant.simulatedMw, 0) }
+    const communicationIssueCount = plants.filter((plant) => plant.communicationIssue).length
+    const communicationStatus = communicationIssueCount === 0 ? 'healthy' : communicationIssueCount === plants.length ? 'failed' : 'partial'
+    return { ...entry, plants, ac: plants.reduce((sum, plant) => sum + plant.ac, 0), simulatedMw: plants.reduce((sum, plant) => sum + plant.simulatedMw, 0), communicationIssueCount, communicationStatus }
   })
 }

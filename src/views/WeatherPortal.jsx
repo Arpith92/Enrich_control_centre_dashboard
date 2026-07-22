@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
-  Air, ArrowBack, CloudOutlined, Compress, DeviceThermostat, History,
-  Refresh, Speed, WaterDrop, WbSunny,
+  Air, ArrowBack, CloudOutlined, DeviceThermostat, History,
+  Refresh, WaterDrop, WbSunny,
 } from '@mui/icons-material'
 import useAutoRefresh from '../hooks/useAutoRefresh'
 
@@ -34,7 +34,6 @@ const METRICS = {
   relative_humidity_2m: { label: 'Relative humidity', unit: '%', color: '#45c8ff' },
   precipitation: { label: 'Precipitation', unit: 'mm', color: '#5b91ff' },
   wind_speed_10m: { label: 'Wind speed', unit: 'km/h', color: '#64e6c3' },
-  surface_pressure: { label: 'Surface pressure', unit: 'hPa', color: '#c38cff' },
   global_tilted_irradiance: { label: 'GTI', unit: 'W/m²', color: '#ffe25b' },
 }
 
@@ -111,9 +110,11 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
     return {
       temperature: avg(valid('temperature_2m')), humidity: avg(valid('relative_humidity_2m')),
       wind: max(valid('wind_speed_10m')), precipitation: sum(valid('precipitation')),
-      gti: max(valid('global_tilted_irradiance')), pressure: avg(valid('surface_pressure')),
+      gti: max(valid('global_tilted_irradiance')),
+      gtiEnergy: sum(valid('global_tilted_irradiance')) / 1000,
     }
   }, [rows])
+  const currentGtiEnergy = liveWeather?.[plant?.id]?.gti_kwh_m2 ?? summary.gtiEnergy
 
   const chartMetric = METRICS[metric]
   const chartRows = visibleRows.length > 744 ? visibleRows.filter((_, index) => index % Math.ceil(visibleRows.length / 744) === 0) : visibleRows
@@ -158,7 +159,7 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
         <article><WaterDrop /><span>Humidity</span><b>{number(current.relative_humidity_2m, 0)}%</b></article>
         <article><Air /><span>Wind / Gust</span><b>{number(current.wind_speed_10m)} <small>km/h</small></b><em>Gust {number(current.wind_gusts_10m)} km/h</em></article>
         <article><CloudOutlined /><span>Rain / Precipitation</span><b>{number(current.precipitation, 2)} <small>mm</small></b><em>Cloud {number(current.cloud_cover, 0)}%</em></article>
-        <article><Compress /><span>Surface pressure</span><b>{number(current.surface_pressure)} <small>hPa</small></b></article>
+        <article><WbSunny /><span>GTI energy today</span><b>{number(currentGtiEnergy, 2)} <small>kWh/m²</small></b></article>
         <article><WbSunny /><span>GTI</span><b>{number(current.global_tilted_irradiance, 0)} <small>W/m²</small></b></article>
       </div>
       <div className="weather-daily"><h2>7-day forecast</h2><div>{dailyRows.map((day) => <article key={day.time}><span>{new Date(`${day.time}T00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' })}</span><WbSunny /><b>{number(day.max, 0)}° <small>/ {number(day.min, 0)}°</small></b><em>{weatherLabel(Number(day.code))}</em><p><WaterDrop /> {number(day.precipitation, 1)} mm · {number(day.probability, 0)}%</p><p><Air /> {number(day.wind, 0)} km/h</p></article>)}</div></div>
@@ -168,12 +169,12 @@ export default function WeatherPortal({ plants, liveWeather, onBack }) {
       <article><Air /><span>Maximum wind</span><b>{number(summary.wind)} <small>km/h</small></b></article>
       <article><CloudOutlined /><span>Total precipitation</span><b>{number(summary.precipitation, 2)} <small>mm</small></b></article>
       <article><WbSunny /><span>Peak GTI</span><b>{number(summary.gti, 0)} <small>W/m²</small></b></article>
-      <article><Speed /><span>Average pressure</span><b>{number(summary.pressure)} <small>hPa</small></b></article>
+      <article><WbSunny /><span>Total GTI energy</span><b>{number(summary.gtiEnergy, 2)} <small>kWh/m²</small></b></article>
     </div>}
 
     {payload && <>
       <div className="weather-chart-panel"><div className="weather-chart-head"><div><span>{mode === 'forecast' ? 'HOURLY FORECAST' : 'HISTORICAL TREND'}</span><h2>{chartMetric.label}</h2></div><div>{Object.entries(METRICS).map(([key, item]) => <button key={key} className={metric === key ? 'active' : ''} onClick={() => setMetric(key)}>{item.label}</button>)}</div></div><ReactECharts option={chartOption} style={{ height: 315 }} /></div>
-      <div className="weather-data-panel"><div><h2>{mode === 'forecast' ? 'Next 72 hours' : 'Historical hourly records'}</h2><span>{visibleRows.length.toLocaleString('en-IN')} records · All times Asia/Kolkata</span></div><div className="weather-table-scroll"><table><thead><tr><th>Time</th><th>Condition</th><th>Temp</th><th>Feels</th><th>RH</th><th>Precip.</th><th>Rain</th><th>Cloud</th><th>Pressure</th><th>Wind</th><th>Direction</th><th>Gust</th><th>GHI</th><th>DNI</th><th>DHI</th><th>GTI</th></tr></thead><tbody>{visibleRows.map((row) => <tr key={row.time}><td>{displayTime(row.time)}</td><td>{weatherLabel(Number(row.weather_code))}</td><td>{number(row.temperature_2m)}°C</td><td>{number(row.apparent_temperature)}°C</td><td>{number(row.relative_humidity_2m, 0)}%</td><td>{number(row.precipitation, 2)} mm</td><td>{number(row.rain, 2)} mm</td><td>{number(row.cloud_cover, 0)}%</td><td>{number(row.surface_pressure)} hPa</td><td>{number(row.wind_speed_10m)} km/h</td><td>{number(row.wind_direction_10m, 0)}°</td><td>{number(row.wind_gusts_10m)} km/h</td><td>{number(row.shortwave_radiation, 0)}</td><td>{number(row.direct_radiation, 0)}</td><td>{number(row.diffuse_radiation, 0)}</td><td><b>{number(row.global_tilted_irradiance, 0)}</b></td></tr>)}</tbody></table></div></div>
+      <div className="weather-data-panel"><div><h2>{mode === 'forecast' ? 'Next 72 hours' : 'Historical hourly records'}</h2><span>{visibleRows.length.toLocaleString('en-IN')} records · All times Asia/Kolkata</span></div><div className="weather-table-scroll"><table><thead><tr><th>Time</th><th>Condition</th><th>Temp</th><th>Feels</th><th>RH</th><th>Precip.</th><th>Rain</th><th>Cloud</th><th>Wind</th><th>Direction</th><th>Gust</th><th>GHI</th><th>DNI</th><th>DHI</th><th>GTI</th></tr></thead><tbody>{visibleRows.map((row) => <tr key={row.time}><td>{displayTime(row.time)}</td><td>{weatherLabel(Number(row.weather_code))}</td><td>{number(row.temperature_2m)}°C</td><td>{number(row.apparent_temperature)}°C</td><td>{number(row.relative_humidity_2m, 0)}%</td><td>{number(row.precipitation, 2)} mm</td><td>{number(row.rain, 2)} mm</td><td>{number(row.cloud_cover, 0)}%</td><td>{number(row.wind_speed_10m)} km/h</td><td>{number(row.wind_direction_10m, 0)}°</td><td>{number(row.wind_gusts_10m)} km/h</td><td>{number(row.shortwave_radiation, 0)}</td><td>{number(row.direct_radiation, 0)}</td><td>{number(row.diffuse_radiation, 0)}</td><td><b>{number(row.global_tilted_irradiance, 0)}</b></td></tr>)}</tbody></table></div></div>
       <p className="weather-attribution">Weather model data: Open-Meteo Forecast and Historical Weather APIs. Historical values are gridded reanalysis/model data for the selected plant coordinates.</p>
     </>}
   </section>
