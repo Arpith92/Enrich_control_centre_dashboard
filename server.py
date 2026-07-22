@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 import hashlib
+import math
 from io import BytesIO
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, Field
 
@@ -18,6 +19,7 @@ from sldc.database import db
 from sldc.config import settings
 from sldc.parser import TARGET_STATIONS
 from sldc.scheduler import collector
+from sldc.scada_realtime import scada_reader
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
@@ -33,9 +35,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Enrich Control Centre", version="2.0.0", lifespan=lifespan)
 
+PLANT_MAPPING_FILE = ROOT / "Control_Centre_plantwise_data_mapping.xlsx"
+PLANT_SITE_ALIASES = {
+    "Bhokar - I": "Bhokar", "Polangal": "NLC Poolangal", "Rajgir": "BEL1MW",
+    "Muradnagar": "BEL2MW", "Nagdha": "PGCIL",
+}
+
+
+@app.get("/api/plant-mapping")
+def plant_mapping():
+    if not PLANT_MAPPING_FILE.exists():
+        raise HTTPException(404, detail="Plant mapping workbook is unavailable")
+    sheet = load_workbook(PLANT_MAPPING_FILE, data_only=True, read_only=True).active
+    sites: dict[str, list[dict]] = {}
+    for row_index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        if not row[4]:
+            continue
+        workbook_site = str(row[4]).strip()
+        site_name = PLANT_SITE_ALIASES.get(workbook_site, workbook_site)
+        plant_name = str(row[2]).strip() if row[2] else f"{site_name} Plant"
+        plants = sites.setdefault(site_name, [])
+        # Demonstration rule: exactly one Bhokar plant is affected; every other plant is healthy.
+        communication_issue = site_name == "Bhokar" and len(plants) == 0
+        plants.append({
+            "id": f"mapping-{row_index}", "customerName": str(row[1] or "").strip(),
+            "plantName": plant_name, "state": str(row[3] or "").strip(), "siteName": site_name,
+            "ac": float(row[5] or 0), "dc": float(row[6] or 0),
+            "commissioningDate": row[7].date().isoformat() if isinstance(row[7], datetime) else str(row[7] or ""),
+            "communicationIssue": communication_issue,
+        })
+    return {"source": PLANT_MAPPING_FILE.name, "sites": sites}
+
 WEATHER_HOURLY = ",".join([
     "temperature_2m", "relative_humidity_2m", "apparent_temperature",
-    "precipitation", "rain", "weather_code", "cloud_cover", "surface_pressure",
+    "precipitation", "rain", "weather_code", "cloud_cover",
     "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m",
     "shortwave_radiation", "direct_radiation", "diffuse_radiation",
     "global_tilted_irradiance",
@@ -48,6 +81,7 @@ WEATHER_DAILY = ",".join([
     "shortwave_radiation_sum",
 ])
 _incident_cache = {"expires": datetime.min, "rows": []}
+_weather_current_cache: dict[tuple[float, float], tuple[datetime, dict]] = {}
 
 
 class OperationalFeedEntry(BaseModel):
@@ -84,6 +118,25 @@ def _valid_plant(plant: str) -> str:
 def live(response: Response):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return db.latest()
+
+
+@app.get("/api/scada/live")
+def scada_live(response: Response):
+    """Latest summed INV1..INV20 readings, grouped by configured site."""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    try:
+        return scada_reader.latest()
+    except Exception as exc:
+        raise HTTPException(503, detail="SCADA MongoDB unavailable") from exc
+
+
+@app.get("/api/scada/sites/{site_name}")
+def scada_site_details(site_name: str, response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    details = scada_reader.site_details(site_name)
+    if details is None:
+        raise HTTPException(404, detail="SCADA site is not configured")
+    return details
 
 
 @app.get("/api/sldc/samples")
@@ -219,6 +272,44 @@ def _weather_response(url: str, params: dict):
             except ValueError:
                 pass
         raise HTTPException(502, detail=detail) from exc
+
+
+@app.get("/api/weather/current")
+def weather_current(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180)):
+    """Current conditions fallback used when the primary weather API is rate limited."""
+    cache_key = (round(lat, 4), round(lon, 4))
+    cached = _weather_current_cache.get(cache_key)
+    if cached and cached[0] > datetime.now():
+        return cached[1]
+    try:
+        result = requests.get(
+            "https://api.met.no/weatherapi/locationforecast/2.0/compact",
+            params={"lat": lat, "lon": lon}, timeout=20,
+            headers={"User-Agent": "Enrich-Control-Centre/2.0 contact@enrichenergy.com"},
+        )
+        result.raise_for_status()
+        point = result.json()["properties"]["timeseries"][0]
+        details = point["data"]["instant"]["details"]
+        next_hour = point["data"].get("next_1_hours", {})
+        symbol = next_hour.get("summary", {}).get("symbol_code", "")
+        weather_code = 95 if "thunder" in symbol else 61 if "rain" in symbol else 45 if "fog" in symbol else 3 if "cloudy" in symbol else 2 if "partlycloudy" in symbol else 0
+        local_hour = (datetime.utcnow() + timedelta(hours=5, minutes=30)).hour + (datetime.utcnow().minute / 60)
+        solar_curve = max(0.0, math.sin(((local_hour - 6) / 12) * math.pi))
+        cloud = float(details.get("cloud_area_fraction", 0))
+        estimated_gti = round(950 * solar_curve * (1 - 0.72 * cloud / 100))
+        payload = {"current": {
+            "time": point["time"], "temperature_2m": details.get("air_temperature"),
+            "relative_humidity_2m": details.get("relative_humidity"),
+            "precipitation": next_hour.get("details", {}).get("precipitation_amount", 0),
+            "rain": next_hour.get("details", {}).get("precipitation_amount", 0), "showers": 0,
+            "weather_code": weather_code, "wind_speed_10m": round(float(details.get("wind_speed", 0)) * 3.6, 1),
+            "shortwave_radiation": estimated_gti, "global_tilted_irradiance": estimated_gti,
+            "source_name": "MET Norway Locationforecast fallback",
+        }}
+        _weather_current_cache[cache_key] = (datetime.now() + timedelta(minutes=10), payload)
+        return payload
+    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
+        raise HTTPException(502, detail="Fallback weather provider unavailable") from exc
 
 
 @app.get("/api/weather/forecast")

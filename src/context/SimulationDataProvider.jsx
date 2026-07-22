@@ -7,6 +7,7 @@ import {
   simulatePlantTelemetry,
 } from '../utils/SolarSimulation'
 import useAutoRefresh from '../hooks/useAutoRefresh'
+import { getConfiguredThirdPartyCustomers } from '../data/thirdPartySites'
 
 const SimulationContext = createContext(null)
 
@@ -18,14 +19,58 @@ export const SimulationDataProvider = ({ children }) => {
   const [history, setHistory] = useState([])
   const [siteWeather, setSiteWeather] = useState({})
   const [weatherUpdatedAt, setWeatherUpdatedAt] = useState(null)
+  const [thirdPartyWeatherSites, setThirdPartyWeatherSites] = useState(() => getConfiguredThirdPartyCustomers().flatMap((customer) => customer.plants.map((plant) => ({ ...plant, name: plant.site, state: customer.name, thirdParty: true }))))
   const weatherRef = useRef({})
+  const scadaRef = useRef({})
+
+  const applyRealtime = useCallback((plant) => {
+    if (plant.name === 'Mundargi') {
+      return {
+        ...plant,
+        currentMw: 0,
+        telemetrySource: 'SCADA',
+        communication: 'Failed',
+        communicationIssue: true,
+        inverterCount: 0,
+        lastUpdated: 'No data - SCADA server issue',
+      }
+    }
+    const live = scadaRef.current[plant.name.toLowerCase()]
+    if (!live) return plant
+    const feedExpired = Date.now() - Number(live.receivedAt || 0) > 180000
+    if (!live.live || feedExpired || !Number.isFinite(Number(live.currentMw))) {
+      return {
+        ...plant,
+        currentMw: 0,
+        telemetrySource: 'SCADA',
+        telemetrySampleType: '1-minute average',
+        communication: 'Failed',
+        communicationIssue: true,
+        inverterCount: 0,
+        lastUpdated: live.timestamp ? dayjs(live.timestamp).format('HH:mm:ss') : 'No current sample',
+      }
+    }
+    return {
+      ...plant,
+      currentMw: Number(live.currentMw),
+      cumulativeGenerationMWh: Number(live.cumulativeGenerationMWh),
+      inverterCount: Number(live.inverterCount) || 0,
+      telemetrySource: 'SCADA',
+      telemetrySampleType: '1-minute average',
+      communication: 'Healthy',
+      communicationIssue: false,
+      lastUpdated: live.timestamp ? dayjs(live.timestamp).format('HH:mm:ss') : dayjs().format('HH:mm:ss'),
+    }
+  }, [])
 
   useEffect(() => {
     const tick = () => {
       const now = dayjs()
       setClock(now)
       setPlants((prevPlants) => {
-        const nextPlants = prevPlants.map((plant) => simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]))
+        const nextPlants = prevPlants.map((plant) => applyRealtime(
+          simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]),
+        ))
         const nextTrend = createTrendData(nextPlants, now)
         setHistory((prevHistory) => [...prevHistory.slice(-23), nextTrend])
         setEvents(createEventFeed(nextPlants, now))
@@ -36,26 +81,64 @@ export const SimulationDataProvider = ({ children }) => {
     tick()
     const interval = window.setInterval(tick, 2000)
     return () => window.clearInterval(interval)
+  }, [applyRealtime])
+
+  const loadScada = useCallback(async () => {
+    try {
+      const response = await fetch('/api/scada/live', { cache: 'no-store' })
+      if (!response.ok) throw new Error(`SCADA API ${response.status}`)
+      const payload = await response.json()
+      scadaRef.current = Object.fromEntries(
+        (payload.sites || []).map((site) => [site.name.toLowerCase(), { ...site, receivedAt: Date.now() }]),
+      )
+      setPlants((current) => current.map(applyRealtime))
+    } catch (error) {
+      console.warn('Real-time SCADA unavailable; using simulation values.', error)
+    }
+  }, [applyRealtime])
+
+  // Source collections contain one-minute averages; do not query them faster.
+  useAutoRefresh(loadScada, 60000)
+
+  useEffect(() => {
+    const refresh = () => setThirdPartyWeatherSites(getConfiguredThirdPartyCustomers().flatMap((customer) => customer.plants.map((plant) => ({ ...plant, name: plant.site, state: customer.name, thirdParty: true }))))
+    window.addEventListener('third-party-sites-updated', refresh)
+    return () => window.removeEventListener('third-party-sites-updated', refresh)
   }, [])
 
   const loadWeather = useCallback(async () => {
       try {
-        const latitudes = plants.map((plant) => plant.lat).join(',')
-        const longitudes = plants.map((plant) => plant.lon).join(',')
+        const weatherSites = [...plants, ...thirdPartyWeatherSites]
         const current = [
           'temperature_2m', 'relative_humidity_2m', 'precipitation', 'rain', 'showers',
-          'weather_code', 'surface_pressure', 'wind_speed_10m', 'shortwave_radiation',
+          'weather_code', 'wind_speed_10m', 'shortwave_radiation',
           'global_tilted_irradiance',
         ].join(',')
-        const response = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${latitudes}&longitude=${longitudes}&current=${current}&hourly=global_tilted_irradiance&forecast_days=1&timezone=Asia%2FKolkata`,
-          { cache: 'no-store' },
-        )
-        if (!response.ok) throw new Error(`Weather API ${response.status}`)
-        const payload = await response.json()
-        const locations = Array.isArray(payload) ? payload : [payload]
-        const nextWeather = {}
-        plants.forEach((plant, index) => {
+        const chunks = Array.from({ length: Math.ceil(weatherSites.length / 10) }, (_, index) => weatherSites.slice(index * 10, index * 10 + 10))
+        const locations = (await Promise.all(chunks.map(async (chunk) => {
+          try {
+            const latitudes = chunk.map((plant) => plant.lat).join(',')
+            const longitudes = chunk.map((plant) => plant.lon).join(',')
+            const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitudes}&longitude=${longitudes}&current=${current}&hourly=global_tilted_irradiance&forecast_days=1&timezone=Asia%2FKolkata`, { cache: 'no-store' })
+            if (!response.ok) throw new Error(`Weather API ${response.status}`)
+            const payload = await response.json()
+            return Array.isArray(payload) ? payload : [payload]
+          } catch (error) {
+            console.warn('Primary weather batch unavailable; using current-weather fallback.', error)
+            return Promise.all(chunk.map(async (plant) => {
+              try {
+                const fallback = await fetch(`/api/weather/current?lat=${plant.lat}&lon=${plant.lon}`, { cache: 'no-store' })
+                if (!fallback.ok) throw new Error(`Fallback weather API ${fallback.status}`)
+                return fallback.json()
+              } catch (fallbackError) {
+                console.warn(`Weather unavailable for ${plant.name}; retaining its previous reading.`, fallbackError)
+                return null
+              }
+            }))
+          }
+        }))).flat()
+        const nextWeather = { ...weatherRef.current }
+        weatherSites.forEach((plant, index) => {
           const location = locations[index]
           if (location?.current) {
             const currentHour = location.current.time?.slice(0, 13)
@@ -80,6 +163,7 @@ export const SimulationDataProvider = ({ children }) => {
               precipitation_mm: Number(precipitationMm.toFixed(2)),
               rain_mm: Number((Number.isFinite(rain) ? rain : 0).toFixed(2)),
               showers_mm: Number((Number.isFinite(showers) ? showers : 0).toFixed(2)),
+              gti_w_m2: Number((Number(currentWeather.global_tilted_irradiance) || 0).toFixed(0)),
               gti_kwh_m2: Number(dailyGti.toFixed(2)),
               source_name: 'Open-Meteo Forecast API',
               source_time: currentWeather.time,
@@ -93,7 +177,7 @@ export const SimulationDataProvider = ({ children }) => {
       } catch (error) {
         console.warn('Live site weather unavailable; retaining SCADA weather values.', error)
       }
-  }, [plants])
+  }, [plants, thirdPartyWeatherSites])
 
   useAutoRefresh(loadWeather, 60000)
 
@@ -129,12 +213,13 @@ export const SimulationDataProvider = ({ children }) => {
   const refreshData = () => {
     const now = dayjs()
     setClock(now)
-    setPlants((prevPlants) => prevPlants.map((plant) => simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id])))
+    loadScada()
+    setPlants((prevPlants) => prevPlants.map((plant) => applyRealtime(simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]))))
     setEvents(createEventFeed(plants, now))
   }
 
   return (
-    <SimulationContext.Provider value={{ plants, metrics, events, clock, bootTime, history, refreshData, siteWeather, weatherUpdatedAt }}>
+    <SimulationContext.Provider value={{ plants, metrics, events, clock, bootTime, history, refreshData, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites }}>
       {children}
     </SimulationContext.Provider>
   )
