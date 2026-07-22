@@ -10,6 +10,17 @@ import useAutoRefresh from '../hooks/useAutoRefresh'
 import { getConfiguredThirdPartyCustomers } from '../data/thirdPartySites'
 
 const SimulationContext = createContext(null)
+const DAILY_GTI_KEY = 'enrich-daily-gti-v1'
+const indiaDate = (value = new Date()) => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(value)
+const readDailyGti = () => {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(DAILY_GTI_KEY)) || {}
+    const today = indiaDate()
+    return Object.fromEntries(Object.entries(stored).filter(([, reading]) => reading.date === today))
+  } catch { return {} }
+}
 
 export const SimulationDataProvider = ({ children }) => {
   const [plants, setPlants] = useState(() => generateInitialPlants())
@@ -22,6 +33,21 @@ export const SimulationDataProvider = ({ children }) => {
   const [thirdPartyWeatherSites, setThirdPartyWeatherSites] = useState(() => getConfiguredThirdPartyCustomers().flatMap((customer) => customer.plants.map((plant) => ({ ...plant, name: plant.site, state: customer.name, thirdParty: true }))))
   const weatherRef = useRef({})
   const scadaRef = useRef({})
+  const dailyGtiRef = useRef(readDailyGti())
+
+  useEffect(() => {
+    const resetAtDayBoundary = () => {
+      const today = indiaDate()
+      if (Object.values(dailyGtiRef.current).some((reading) => reading.date !== today)) {
+        dailyGtiRef.current = {}
+        window.localStorage.setItem(DAILY_GTI_KEY, '{}')
+        weatherRef.current = Object.fromEntries(Object.entries(weatherRef.current).map(([id, reading]) => [id, { ...reading, gti_kwh_m2: 0 }]))
+        setSiteWeather({ ...weatherRef.current })
+      }
+    }
+    const timer = window.setInterval(resetAtDayBoundary, 30000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const applyRealtime = useCallback((plant) => {
     if (plant.name === 'Mundargi') {
@@ -141,16 +167,16 @@ export const SimulationDataProvider = ({ children }) => {
         weatherSites.forEach((plant, index) => {
           const location = locations[index]
           if (location?.current) {
-            const currentHour = location.current.time?.slice(0, 13)
+            const currentDay = location.current.time?.slice(0, 10)
             const hourlyTimes = location.hourly?.time || []
-            let lastHourIndex = -1
-            for (let hourIndex = 0; hourIndex < hourlyTimes.length; hourIndex += 1) {
-              if (hourlyTimes[hourIndex].slice(0, 13) <= currentHour) lastHourIndex = hourIndex
-            }
-            const dailyGti = lastHourIndex >= 0
-              ? location.hourly.global_tilted_irradiance.slice(0, lastHourIndex + 1).reduce((sum, value) => sum + (Number(value) || 0), 0) / 1000
-              : 0
             const currentWeather = location.current
+            const dayIndexes = hourlyTimes.reduce((indexes, time, hourIndex) => {
+              if (time.slice(0, 10) === currentDay) indexes.push(hourIndex)
+              return indexes
+            }, [])
+            const providerDailyGti = dayIndexes.length
+              ? dayIndexes.reduce((sum, hourIndex) => sum + (Number(location.hourly.global_tilted_irradiance?.[hourIndex]) || 0), 0) / 1000
+              : Number.isFinite(Number(currentWeather.daily_gti_kwh_m2)) ? Number(currentWeather.daily_gti_kwh_m2) : null
             const precipitation = Number(currentWeather.precipitation)
             const rain = Number(currentWeather.rain)
             const showers = Number(currentWeather.showers)
@@ -158,13 +184,23 @@ export const SimulationDataProvider = ({ children }) => {
               ? precipitation
               : Math.max(Number.isFinite(rain) ? rain : 0, Number.isFinite(showers) ? showers : 0)
 
+            const now = Date.now()
+            const today = indiaDate()
+            const previousDaily = dailyGtiRef.current[plant.id]
+            let retainedDailyGti = previousDaily?.date === today ? Number(previousDaily.value) || 0 : 0
+            if (providerDailyGti != null) retainedDailyGti = Math.max(retainedDailyGti, providerDailyGti)
+            else if (previousDaily?.date === today && previousDaily.sampledAt) {
+              const elapsedHours = Math.min((now - previousDaily.sampledAt) / 3600000, 10 / 60)
+              retainedDailyGti += Math.max(0, Number(currentWeather.global_tilted_irradiance) || 0) * elapsedHours / 1000
+            }
+            dailyGtiRef.current[plant.id] = { date: today, value: retainedDailyGti, sampledAt: now }
             nextWeather[plant.id] = {
               ...currentWeather,
               precipitation_mm: Number(precipitationMm.toFixed(2)),
               rain_mm: Number((Number.isFinite(rain) ? rain : 0).toFixed(2)),
               showers_mm: Number((Number.isFinite(showers) ? showers : 0).toFixed(2)),
               gti_w_m2: Number((Number(currentWeather.global_tilted_irradiance) || 0).toFixed(0)),
-              gti_kwh_m2: Number(dailyGti.toFixed(2)),
+              gti_kwh_m2: Number(retainedDailyGti.toFixed(2)),
               source_name: 'Open-Meteo Forecast API',
               source_time: currentWeather.time,
               source_type: 'Live model current weather',
@@ -172,6 +208,7 @@ export const SimulationDataProvider = ({ children }) => {
           }
         })
         weatherRef.current = nextWeather
+        window.localStorage.setItem(DAILY_GTI_KEY, JSON.stringify(dailyGtiRef.current))
         setSiteWeather(nextWeather)
         setWeatherUpdatedAt(dayjs())
       } catch (error) {

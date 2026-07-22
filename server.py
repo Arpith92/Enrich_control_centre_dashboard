@@ -296,7 +296,11 @@ def weather_current(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-18
         local_hour = (datetime.utcnow() + timedelta(hours=5, minutes=30)).hour + (datetime.utcnow().minute / 60)
         solar_curve = max(0.0, math.sin(((local_hour - 6) / 12) * math.pi))
         cloud = float(details.get("cloud_area_fraction", 0))
-        estimated_gti = round(950 * solar_curve * (1 - 0.72 * cloud / 100))
+        cloud_factor = max(0.18, 1 - 0.72 * cloud / 100)
+        estimated_gti = round(950 * solar_curve * cloud_factor)
+        # Integral of a representative 12-hour solar curve. This supplies the
+        # full-day irradiation value even when the current reading is at night.
+        daily_gti_kwh_m2 = round(950 * cloud_factor * (24 / math.pi) / 1000, 2)
         payload = {"current": {
             "time": point["time"], "temperature_2m": details.get("air_temperature"),
             "relative_humidity_2m": details.get("relative_humidity"),
@@ -304,6 +308,7 @@ def weather_current(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-18
             "rain": next_hour.get("details", {}).get("precipitation_amount", 0), "showers": 0,
             "weather_code": weather_code, "wind_speed_10m": round(float(details.get("wind_speed", 0)) * 3.6, 1),
             "shortwave_radiation": estimated_gti, "global_tilted_irradiance": estimated_gti,
+            "daily_gti_kwh_m2": daily_gti_kwh_m2,
             "source_name": "MET Norway Locationforecast fallback",
         }}
         _weather_current_cache[cache_key] = (datetime.now() + timedelta(minutes=10), payload)
