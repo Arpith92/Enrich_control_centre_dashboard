@@ -168,8 +168,12 @@
 .third-party-plant b { color: #e7f1fb; font-size: 10px; }
 .third-party-plant small { margin-top: 2px; color: #7890a6; font-size: 8px; }
 .third-party-popup footer { padding: 8px 14px; color: #b6954a; font-size: 8px; }
-.map-layer-key { position: absolute; z-index: 500; left: 12px; bottom: 48px; display: flex; gap: 12px; padding: 6px 9px; border: 1px solid #23445e; border-radius: 4px; background: rgba(3, 15, 28, .92); color: #aebfd0; font-size: 8px; pointer-events: none; }
-.map-layer-key span { display: flex; align-items: center; gap: 5px; }
+.map-layer-key { position: absolute; z-index: 500; left: 12px; bottom: 48px; display: flex; gap: 3px; padding: 3px; border: 1px solid #23445e; border-radius: 4px; background: rgba(3, 15, 28, .92); color: #aebfd0; font-size: 8px; }
+.map-layer-key button { display: flex; align-items: center; gap: 5px; padding: 4px 6px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #aebfd0; font: inherit; cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease; }
+.map-layer-key button:hover { border-color: #315b78; background: #09233a; color: #fff; }
+.map-layer-key button.active { color: #fff; background: #0b2a43; }
+.map-layer-key button.enrich-filter.active { border-color: #43f467; }
+.map-layer-key button.third-party-filter.active { border-color: #9b5de5; }
 .map-layer-key i { width: 9px; height: 9px; border-radius: 50%; }
 .map-layer-key .enrich-key { background: #43f467; box-shadow: 0 0 5px #43f467; }
 .map-layer-key .third-party-key, .third-party-dot { display: inline-block; background: #9b5de5; border-radius: 50%; box-shadow: 0 0 5px rgba(155,93,229,.8); }

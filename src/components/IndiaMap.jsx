@@ -76,7 +76,7 @@ const thirdPartyPlantIcon = (plant) => L.divIcon({
   iconSize: [24, 24], iconAnchor: [12, 12], tooltipAnchor: [0, -12],
 })
 
-const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
+const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) => {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef({})
@@ -85,16 +85,17 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
   const thirdPartyCalloutsRef = useRef({})
   const expandedPlantsRef = useRef(null)
   const enrichPlantsLayerRef = useRef(null)
-  const [thirdPartyCustomers, setThirdPartyCustomers] = useState(() => simulateThirdPartyCustomers())
+  const [thirdPartyCustomers, setThirdPartyCustomers] = useState(() => simulateThirdPartyCustomers(new Date(), siteWeather))
   const [selectedCustomerId, setSelectedCustomerId] = useState(null)
   const [selectedEnrichId, setSelectedEnrichId] = useState(null)
 
   useEffect(() => {
-    const interval = window.setInterval(() => setThirdPartyCustomers(simulateThirdPartyCustomers()), 30000)
-    const refresh = () => setThirdPartyCustomers(simulateThirdPartyCustomers())
+    const refresh = () => setThirdPartyCustomers(simulateThirdPartyCustomers(new Date(), siteWeather))
+    const interval = window.setInterval(refresh, 30000)
+    refresh()
     window.addEventListener('third-party-sites-updated', refresh)
     return () => { window.clearInterval(interval); window.removeEventListener('third-party-sites-updated', refresh) }
-  }, [])
+  }, [siteWeather])
 
   useEffect(() => {
     if (scope?.type === 'customer' || scope?.type === 'third-party-plant') setSelectedCustomerId(scope.customerId || scope.id)
@@ -226,7 +227,9 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
           map.removeLayer(parentMarker)
           delete markersRef.current[site.id]
         }
-        const siteCapacity = mappedPlants.reduce((sum, item) => sum + item.ac, 0) || site.capacity
+        const operationalCapacity = mappedPlants
+          .filter((item) => !item.communicationIssue && site.name !== 'Mundargi')
+          .reduce((sum, item) => sum + item.ac, 0) || site.capacity
         const layer = L.layerGroup()
         const mappedPositions = displayedMappedPlants.map((mappedPlant) => {
           const originalIndex = mappedPlants.findIndex((item) => item.id === mappedPlant.id)
@@ -238,11 +241,11 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
           const lonJitter = (((seed * 7) % 13) - 6) * .0022
           const lat = site.lat + Math.sin(angle) * radius + latJitter
           const lon = site.lon + Math.cos(angle) * radius + lonJitter
-          const generation = site.currentMw * (mappedPlant.ac / siteCapacity)
           // A communication issue belongs to the individual plant, so its marker is
           // fully offline (red). The parent site remains partial/amber while any of
           // its other plants are still communicating.
           const mappedCommunicationIssue = mappedPlant.communicationIssue || site.name === 'Mundargi'
+          const generation = mappedCommunicationIssue ? 0 : site.currentMw * (mappedPlant.ac / operationalCapacity)
           const mappedStatus = mappedCommunicationIssue ? { label: 'Offline', color: '#ff4d62' } : { label: 'Online', color: '#42ec61' }
           const issueLabel = site.name === 'Mundargi' ? 'SCADA SERVER ISSUE' : 'COMMUNICATION DOWN'
           const popup = `<div class="plant-popup"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><small>${site.name} · ${mappedPlant.state}</small><hr/><span>AC capacity <b>${mappedPlant.ac.toFixed(2)} MW</b></span><span>DC capacity <b>${mappedPlant.dc.toFixed(2)} MWp</b></span><span>Current generation <b>${generation.toFixed(2)} MW</b></span><span>Communication <b style="color:${mappedStatus.color}">${mappedCommunicationIssue ? issueLabel : 'HEALTHY'}</b></span><span>Commissioned <b>${mappedPlant.commissioningDate || '—'}</b></span></div>`
@@ -266,7 +269,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
     if (!map) return
     const displayedCustomers = scope?.type === 'customer' || scope?.type === 'third-party-plant'
       ? thirdPartyCustomers.filter((customer) => customer.id === (scope.customerId || scope.id))
-      : scope?.type === 'enrich' || scope?.type === 'enrich-plant' ? [] : thirdPartyCustomers
+      : scope?.type === 'enrich' || scope?.type === 'enrich-plant' || scope?.type === 'portfolio-enrich' ? [] : thirdPartyCustomers
     const displayedCustomerIds = new Set(displayedCustomers.map((customer) => customer.id))
     Object.entries(thirdPartyMarkersRef.current).forEach(([id, marker]) => {
       if (!displayedCustomerIds.has(id)) {
@@ -324,7 +327,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
     }
     const selected = thirdPartyCustomers.find((customer) => customer.id === selectedCustomerId)
     if (!selected) {
-      if (scope?.type === 'enrich' || scope?.type === 'enrich-plant') return
+      if (scope?.type === 'enrich' || scope?.type === 'enrich-plant' || scope?.type === 'portfolio-enrich') return
       map.fitBounds([[7.5, 68], [35.8, 97.5]], { padding: [26, 26] })
       return
     }
@@ -349,10 +352,19 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
   const thirdPartyCapacity = thirdPartyCustomers.reduce((sum, customer) => sum + customer.ac, 0)
   const selectedThirdPartyCapacity = scope?.plant?.ac ?? scope?.customer?.ac
   const selectedThirdPartyGeneration = scope?.plant?.simulatedMw ?? scope?.customer?.simulatedMw
-  const reportingCount = scope?.type === 'third-party-plant' ? 1 : scope?.type === 'customer' ? scope.customer.plants.length : plants.length
-  const installedCapacity = selectedThirdPartyCapacity ?? (plants.reduce((sum, plant) => sum + plant.capacity, 0) + (scope ? 0 : thirdPartyCapacity))
-  const liveGeneration = selectedThirdPartyGeneration ?? plants.reduce((sum, plant) => sum + plant.currentMw, 0)
-  const fleetAvailability = plants.length ? plants.reduce((sum, plant) => sum + plant.availability, 0) / plants.length : 100
+  const thirdPartyGeneration = thirdPartyCustomers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
+  const thirdPartyPlantCount = thirdPartyCustomers.reduce((sum, customer) => sum + customer.plants.length, 0)
+  const reportingCount = scope?.type === 'third-party-plant' ? 1 : scope?.type === 'customer' ? scope.customer.plants.length : scope?.type === 'portfolio-third-party' ? thirdPartyPlantCount : plants.length + (scope ? 0 : thirdPartyPlantCount)
+  const reportingOnline = scope?.type === 'customer' || scope?.type === 'third-party-plant'
+    ? reportingCount
+    : scope?.type === 'portfolio-third-party' ? thirdPartyPlantCount : online + (scope ? 0 : thirdPartyPlantCount)
+  const installedCapacity = selectedThirdPartyCapacity ?? (scope?.type === 'portfolio-third-party' ? thirdPartyCapacity : plants.reduce((sum, plant) => sum + plant.capacity, 0) + (scope ? 0 : thirdPartyCapacity))
+  const liveGeneration = selectedThirdPartyGeneration ?? (scope?.type === 'portfolio-third-party' ? thirdPartyGeneration : plants.reduce((sum, plant) => sum + plant.currentMw, 0) + (scope ? 0 : thirdPartyGeneration))
+  const fleetAvailability = scope?.type === 'customer' || scope?.type === 'third-party-plant' || scope?.type === 'portfolio-third-party'
+    ? 100
+    : reportingCount
+      ? (plants.reduce((sum, plant) => sum + plant.availability, 0) + (scope ? 0 : thirdPartyPlantCount * 100)) / reportingCount
+      : 100
   const activeMappedPlants = (scope?.type === 'enrich' || scope?.type === 'enrich-plant') && plants[0] ? plantMapping[plants[0].name] || [] : []
   return (
     <Paper elevation={0} className="glass-panel map-panel">
@@ -361,9 +373,12 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping }) => {
         <Box className="map-legend"><span><i className="green-dot" />Enrich site</span><span><i className="third-party-dot" />Third-party customer</span></Box>
       </Box>
       <Box className="india-map-wrap"><div ref={containerRef} className="india-leaflet-map" />{activeMappedPlants.length > 0 && <div className="map-drilldown-badge"><b>{plants[0].name}</b><span>{scope?.type === 'enrich-plant' ? `1 of ${activeMappedPlants.length} plants selected` : `${activeMappedPlants.length} plants · live generation ${plants[0].currentMw.toFixed(2)} MW`}</span></div>}<div className="map-live-badge">● LIVE GPS / SCADA</div></Box>
-      <div className="map-layer-key"><span><i className="enrich-key" />Enrich commissioned</span><span><i className="third-party-key" />Third-party sites</span></div>
+      <div className="map-layer-key">
+        <button className={scope?.type === 'portfolio-enrich' ? 'active enrich-filter' : 'enrich-filter'} aria-pressed={scope?.type === 'portfolio-enrich'} onClick={() => onSelectScope?.(scope?.type === 'portfolio-enrich' ? null : { type: 'portfolio-enrich', name: 'Enrich commissioned' })}><i className="enrich-key" />Enrich commissioned</button>
+        <button className={scope?.type === 'portfolio-third-party' ? 'active third-party-filter' : 'third-party-filter'} aria-pressed={scope?.type === 'portfolio-third-party'} onClick={() => onSelectScope?.(scope?.type === 'portfolio-third-party' ? null : { type: 'portfolio-third-party', name: 'Third-party sites' })}><i className="third-party-key" />Third-party sites</button>
+      </div>
       <Box className="map-summary">
-        <div className="map-reading"><span>Plants reporting</span><strong>{scope?.type === 'customer' || scope?.type === 'third-party-plant' ? reportingCount : online} / {reportingCount}</strong></div>
+        <div className="map-reading"><span>Plants reporting</span><strong>{reportingOnline} / {reportingCount}</strong></div>
         <div className="map-reading"><span>Installed capacity</span><strong>{installedCapacity.toFixed(0)} MW</strong></div>
         <div className="map-reading"><span>Live generation</span><strong>{liveGeneration.toFixed(1)} MW</strong></div>
         <div className="map-reading"><span>Fleet availability</span><strong>{fleetAvailability.toFixed(1)}%</strong></div>

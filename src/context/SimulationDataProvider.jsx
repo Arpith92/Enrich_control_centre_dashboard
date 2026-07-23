@@ -61,6 +61,10 @@ export const SimulationDataProvider = ({ children }) => {
         lastUpdated: 'No data - SCADA server issue',
       }
     }
+    // Bhokar is demonstrated plant-wise: one mapped plant is unavailable while
+    // the remaining plants continue to generate from capacity and live GTI.
+    // A site-level SCADA zero must not suppress the healthy plant simulation.
+    if (plant.name === 'Bhokar') return plant
     const live = scadaRef.current[plant.name.toLowerCase()]
     if (!live) return plant
     const feedExpired = Date.now() - Number(live.receivedAt || 0) > 180000
