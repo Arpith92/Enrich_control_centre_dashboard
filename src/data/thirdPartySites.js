@@ -86,20 +86,36 @@ export const getConfiguredThirdPartyCustomers = () => {
   }))
 }
 
-export const simulateThirdPartyCustomers = (date = new Date()) => {
+export const simulateThirdPartyCustomers = (date = new Date(), siteWeather = {}) => {
   const hour = date.getHours() + date.getMinutes() / 60
   const solarCurve = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI))
-  const tick = Math.floor(date.getTime() / 30000)
   return getConfiguredThirdPartyCustomers().map((entry, customerIndex) => {
     const plants = entry.plants.map((plant, plantIndex) => {
-      const factor = 0.72 + (((plantIndex * 17 + customerIndex * 11 + tick) % 18) / 100)
-      const simulatedMw = plant.ac * solarCurve * factor
+      const weather = siteWeather[plant.id]
+      const gtiWm2 = Number(weather?.gti_w_m2 ?? weather?.global_tilted_irradiance)
+      const dailyGtiKwhM2 = Number(weather?.gti_kwh_m2)
+      const efficiency = 0.76 + ((plantIndex * 17 + customerIndex * 11) % 12) / 100
+      const irradianceFactor = Number.isFinite(gtiWm2) ? Math.max(0, gtiWm2) / 1000 : solarCurve
+      const simulatedMw = Math.min(plant.ac, plant.ac * irradianceFactor * efficiency)
+      const todayMwh = Number.isFinite(dailyGtiKwhM2)
+        ? plant.ac * Math.max(0, dailyGtiKwhM2) * efficiency
+        : plant.ac * solarCurve * 4.5 * efficiency
       const { lat, lon } = plant
       const communicationIssue = false
-      return { ...plant, lat, lon, simulatedMw, communicationIssue, status: communicationIssue ? 'Communication issue' : solarCurve === 0 ? 'Standby' : 'Generating' }
+      return {
+        ...plant, lat, lon, efficiency, gtiWm2: Number.isFinite(gtiWm2) ? gtiWm2 : null,
+        simulatedMw, todayMwh, communicationIssue,
+        status: communicationIssue ? 'Communication issue' : simulatedMw <= 0.01 ? 'Standby' : 'Generating',
+      }
     })
     const communicationIssueCount = plants.filter((plant) => plant.communicationIssue).length
     const communicationStatus = communicationIssueCount === 0 ? 'healthy' : communicationIssueCount === plants.length ? 'failed' : 'partial'
-    return { ...entry, plants, ac: plants.reduce((sum, plant) => sum + plant.ac, 0), simulatedMw: plants.reduce((sum, plant) => sum + plant.simulatedMw, 0), communicationIssueCount, communicationStatus }
+    return {
+      ...entry, plants,
+      ac: plants.reduce((sum, plant) => sum + plant.ac, 0),
+      simulatedMw: plants.reduce((sum, plant) => sum + plant.simulatedMw, 0),
+      todayMwh: plants.reduce((sum, plant) => sum + plant.todayMwh, 0),
+      communicationIssueCount, communicationStatus,
+    }
   })
 }

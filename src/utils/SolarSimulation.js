@@ -100,7 +100,10 @@ export const simulatePlantTelemetry = (plant, now, previousPlant, liveWeather) =
   const cloudCover = isMonsoon
     ? clamp(72 + Math.random() * 24, 72, 96)
     : clamp(Math.max(0, 90 * (1 - curve)) + Math.random() * 8, 0, 90)
-  const todayMwh = clamp(previousPlant.todayMwh + nextMw / 1800, 0, plant.capacity * 32)
+  const dailyGti = Number(liveWeather?.gti_kwh_m2)
+  const todayMwh = Number.isFinite(dailyGti)
+    ? clamp(plant.capacity * Math.max(0, dailyGti) * siteEfficiency, 0, plant.capacity * 8)
+    : clamp(previousPlant.todayMwh + nextMw / 1800, 0, plant.capacity * 8)
   const communication = nextMw > 0.2 * plant.capacity && availability > 99 ? 'Healthy' : availability > 98 ? 'Pending' : 'Degraded'
   const health = nextMw > 0.15 * plant.capacity && pr > 82 ? 'Healthy' : pr > 74 ? 'Warning' : 'Critical'
   const alarm = nextMw < 0.08 * plant.capacity ? 'Offline' : pr < 80 ? 'Low PR' : cloudCover > 70 ? 'Weather Alert' : 'None'

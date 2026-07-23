@@ -84,15 +84,16 @@ const Kpis = ({ m }) => {
     <div className="ops-kpi" key={label}><Icon /><div><span>{label}</span><b>{value}<small>{unit}</small></b><em>{note}</em></div></div>)}</div>
 }
 
-const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping }) => {
-  const [customers, setCustomers] = useState(() => simulateThirdPartyCustomers())
+const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) => {
+  const [customers, setCustomers] = useState(() => simulateThirdPartyCustomers(new Date(), siteWeather))
   const [active, setActive] = useState(null)
   useEffect(() => {
-    const interval = window.setInterval(() => setCustomers(simulateThirdPartyCustomers()), 30000)
-    const refresh = () => setCustomers(simulateThirdPartyCustomers())
+    const refresh = () => setCustomers(simulateThirdPartyCustomers(new Date(), siteWeather))
+    const interval = window.setInterval(refresh, 30000)
+    refresh()
     window.addEventListener('third-party-sites-updated', refresh)
     return () => { window.clearInterval(interval); window.removeEventListener('third-party-sites-updated', refresh) }
-  }, [])
+  }, [siteWeather])
   const select = (id) => {
     const next = active === id ? null : id
     setActive(next)
@@ -102,10 +103,15 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping }) => 
   const totalGeneration = customers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
   const enrichCapacity = plants.reduce((sum, plant) => sum + plant.capacity, 0)
   const enrichGeneration = plants.reduce((sum, plant) => sum + plant.currentMw, 0)
+  const showEnrich = scope?.type !== 'portfolio-third-party'
+  const showThirdParty = scope?.type !== 'portfolio-enrich'
+  const displayedCapacity = showEnrich && showThirdParty ? enrichCapacity + totalCapacity : showEnrich ? enrichCapacity : totalCapacity
+  const displayedGeneration = showEnrich && showThirdParty ? enrichGeneration + totalGeneration : showEnrich ? enrichGeneration : totalGeneration
+  const totalLabel = showEnrich && showThirdParty ? 'ALL SITES' : showEnrich ? 'ENRICH SITES' : 'THIRD-PARTY SITES'
   return <Panel title="ALL COMMISSIONED SITES" className="third-party-portfolio">
     <div className="portfolio-head"><span>Portfolio / Site</span><span>Capacity</span><span>Generation</span></div>
     <div className="portfolio-rows portfolio-site-list">
-      {[...plants].sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name)).map((plant) => {
+      {showEnrich && [...plants].sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name)).map((plant) => {
         const mappedPlants = plantMapping[plant.name] || []
         const issueCount = mappedPlants.filter((item) => item.communicationIssue).length
         const failed = (plant.name !== 'Bhokar' && (plant.communication === 'Failed' || plant.communicationIssue)) || (mappedPlants.length > 0 && issueCount === mappedPlants.length)
@@ -113,11 +119,11 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping }) => 
         const selected = (scope?.type === 'enrich' && scope.id === plant.id) || (scope?.type === 'enrich-plant' && scope.siteId === plant.id)
         return <button className={`portfolio-site enrich-site-row ${failed ? 'site-offline' : partial ? 'site-partial' : 'site-online'} ${selected ? 'active' : ''}`} title={failed ? 'All plants have communication issues' : partial ? `${issueCount} of ${mappedPlants.length} plants has a communication issue` : `${mappedPlants.length || 1} plant(s) · all communication healthy`} key={plant.id} onClick={() => onSelectScope(selected ? null : { type: 'enrich', id: plant.id, name: plant.name })}><span><b>{plant.name}</b></span><strong>{plant.capacity.toFixed(0)} MW</strong><strong>{plant.currentMw.toFixed(2)} MW</strong></button>
       })}
-      {[...customers].sort((a, b) => b.ac - a.ac || a.name.localeCompare(b.name)).map((customer) => <div className={`portfolio-customer-section ${active === customer.id ? 'active' : ''}`} key={customer.id}>
+      {showThirdParty && [...customers].sort((a, b) => b.ac - a.ac || a.name.localeCompare(b.name)).map((customer) => <div className={`portfolio-customer-section ${active === customer.id ? 'active' : ''}`} key={customer.id}>
         <button className={`portfolio-site customer-site-row site-third-party comm-${customer.communicationStatus} ${scope?.customerId === customer.id || scope?.id === customer.id ? 'active' : ''}`} title={customer.communicationIssueCount ? `${customer.communicationIssueCount} of ${customer.plants.length} plants have communication issues` : 'All plants communicating'} onClick={() => { const isSelected = scope?.customerId === customer.id || scope?.id === customer.id; select(customer.id); onSelectScope(isSelected ? null : { type: 'customer', id: customer.id, customerId: customer.id, name: customer.name, customer }) }}><span><b>{customer.name}</b></span><strong>{customer.ac.toFixed(0)} MW</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong></button>
       </div>)}
     </div>
-    <button className={`portfolio-total ${!scope ? 'active' : ''}`} onClick={() => { setActive(null); window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: null })); onSelectScope(null) }} title="Clear filter and show all sites"><span><b>ALL SITES</b>{scope && <small>Click to clear filter</small>}</span><strong>{(enrichCapacity + totalCapacity).toFixed(0)} MW</strong><strong>{(enrichGeneration + totalGeneration).toFixed(2)} MW</strong></button>
+    <button className={`portfolio-total ${!scope ? 'active' : ''}`} onClick={() => { setActive(null); window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: null })); onSelectScope(null) }} title="Clear filter and show all sites"><span><b>{totalLabel}</b>{scope && <small>Click to clear filter</small>}</span><strong>{displayedCapacity.toFixed(0)} MW</strong><strong>{displayedGeneration.toFixed(2)} MW</strong></button>
   </Panel>
 }
 
@@ -230,30 +236,85 @@ const DashboardView = () => {
     loadMapping()
   }, [])
   const selectedEnrichPlant = scope?.type === 'enrich' ? plants.find((plant) => plant.id === scope.id) : scope?.type === 'enrich-plant' ? plants.find((plant) => plant.id === scope.siteId) : null
-  const visiblePlants = selectedEnrichPlant ? [selectedEnrichPlant] : scope?.type === 'customer' || scope?.type === 'third-party-plant' ? [] : plants
+  const visiblePlants = selectedEnrichPlant
+    ? [selectedEnrichPlant]
+    : scope?.type === 'customer' || scope?.type === 'third-party-plant' || scope?.type === 'portfolio-third-party' ? [] : plants
   const scopedThirdPartyWeather = scope?.type === 'third-party-plant'
     ? [{ ...scope.plant, name: scope.plant.site, state: scope.customer.name, thirdParty: true }]
     : scope?.type === 'customer'
       ? scope.customer.plants.map((plant) => ({ ...plant, name: plant.site, state: scope.customer.name, thirdParty: true }))
       : []
-  const visibleWeatherPlants = selectedEnrichPlant ? [selectedEnrichPlant] : scopedThirdPartyWeather.length ? scopedThirdPartyWeather : [...plants, ...thirdPartyWeatherSites]
+  const visibleWeatherPlants = selectedEnrichPlant
+    ? [selectedEnrichPlant]
+    : scopedThirdPartyWeather.length ? scopedThirdPartyWeather
+      : scope?.type === 'portfolio-enrich' ? plants
+        : scope?.type === 'portfolio-third-party' ? thirdPartyWeatherSites
+          : [...plants, ...thirdPartyWeatherSites]
   const mappedSiteCapacity = selectedEnrichPlant ? (plantMapping[selectedEnrichPlant.name] || []).reduce((sum, item) => sum + item.ac, 0) : 0
-  const scopeCapacity = scope?.mappedPlant?.ac ?? selectedEnrichPlant?.capacity ?? scope?.plant?.ac ?? scope?.customer?.ac
-  const scopeGeneration = scope?.mappedPlant && selectedEnrichPlant ? selectedEnrichPlant.currentMw * (scope.mappedPlant.ac / (mappedSiteCapacity || selectedEnrichPlant.capacity)) : selectedEnrichPlant?.currentMw ?? scope?.plant?.simulatedMw ?? scope?.customer?.simulatedMw
+  const portfolioThirdParty = simulateThirdPartyCustomers(new Date(), siteWeather)
+  const portfolioThirdPartyCapacity = portfolioThirdParty.reduce((sum, customer) => sum + customer.ac, 0)
+  const portfolioThirdPartyGeneration = portfolioThirdParty.reduce((sum, customer) => sum + customer.simulatedMw, 0)
+  const portfolioThirdPartyToday = portfolioThirdParty.reduce((sum, customer) => sum + customer.todayMwh, 0)
+  const isEnrichPortfolio = scope?.type === 'portfolio-enrich'
+  const scopedThirdPartyPlants = scope?.type === 'third-party-plant'
+    ? [scope.plant]
+    : scope?.type === 'customer' ? scope.customer.plants
+      : scope?.type === 'portfolio-third-party' ? portfolioThirdParty.flatMap((customer) => customer.plants)
+        : []
+  const isThirdPartyScope = scopedThirdPartyPlants.length > 0
+  const scopedThirdPartyPr = isThirdPartyScope
+    ? (scopedThirdPartyPlants.reduce((sum, plant) => sum + plant.ac * (plant.efficiency || .8), 0) / scopedThirdPartyPlants.reduce((sum, plant) => sum + plant.ac, 0)) * 100
+    : null
+  const scopedThirdPartyAvailability = isThirdPartyScope
+    ? (scopedThirdPartyPlants.filter((plant) => !plant.communicationIssue).length / scopedThirdPartyPlants.length) * 100
+    : null
+  const scopeCapacity = scope?.mappedPlant?.ac ?? selectedEnrichPlant?.capacity ?? scope?.plant?.ac ?? scope?.customer?.ac ?? (scope?.type === 'portfolio-third-party' ? portfolioThirdPartyCapacity : isEnrichPortfolio ? metrics.totalCapacity : undefined)
+  const scopeGeneration = scope?.mappedPlant && selectedEnrichPlant ? selectedEnrichPlant.currentMw * (scope.mappedPlant.ac / (mappedSiteCapacity || selectedEnrichPlant.capacity)) : selectedEnrichPlant?.currentMw ?? scope?.plant?.simulatedMw ?? scope?.customer?.simulatedMw ?? (scope?.type === 'portfolio-third-party' ? portfolioThirdPartyGeneration : isEnrichPortfolio ? metrics.currentGeneration : undefined)
+  const scopeTodayGeneration = scope?.mappedPlant && selectedEnrichPlant
+    ? selectedEnrichPlant.todayMwh * (scope.mappedPlant.ac / (mappedSiteCapacity || selectedEnrichPlant.capacity))
+    : selectedEnrichPlant?.todayMwh ?? scope?.plant?.todayMwh ?? scope?.customer?.todayMwh
+      ?? (scope?.type === 'portfolio-third-party' ? portfolioThirdPartyToday : isEnrichPortfolio ? metrics.todayGeneration : undefined)
   const fleetCapacity = plants.reduce((sum, plant) => sum + plant.capacity, 0) || 1
   const scale = scopeCapacity ? scopeCapacity / fleetCapacity : 1
+  const allCapacity = metrics.totalCapacity + portfolioThirdPartyCapacity
+  const allCurrentGeneration = metrics.currentGeneration + portfolioThirdPartyGeneration
+  const allTodayGeneration = metrics.todayGeneration + portfolioThirdPartyToday
+  const allThirdPartyPlants = portfolioThirdParty.flatMap((customer) => customer.plants)
+  const allOnlinePlants = metrics.onlinePlants + allThirdPartyPlants.filter((plant) => !plant.communicationIssue).length
+  const allPlantCount = metrics.totalPlants + allThirdPartyPlants.length
+  const allThirdPartyPr = portfolioThirdPartyCapacity
+    ? (allThirdPartyPlants.reduce((sum, plant) => sum + plant.ac * (plant.efficiency || .8), 0) / portfolioThirdPartyCapacity) * 100
+    : metrics.averagePr
+  const combinedMetrics = {
+    ...metrics,
+    totalPlants: allPlantCount,
+    totalCapacity: allCapacity,
+    onlinePlants: allOnlinePlants,
+    offlinePlants: allPlantCount - allOnlinePlants,
+    currentGeneration: allCurrentGeneration,
+    todayGeneration: allTodayGeneration,
+    revenue: (allTodayGeneration * 1000 * 4.2) / 10000000,
+    co2Saved: allTodayGeneration * 0.82,
+    averagePr: ((metrics.averagePr * metrics.totalCapacity) + (allThirdPartyPr * portfolioThirdPartyCapacity)) / Math.max(1, allCapacity),
+    averageAvailability: ((metrics.averageAvailability * metrics.totalPlants) + (allThirdPartyPlants.filter((plant) => !plant.communicationIssue).length * 100)) / Math.max(1, allPlantCount),
+    averageCuf: (allTodayGeneration / Math.max(1, allCapacity * 24)) * 100,
+    gridExport: allCurrentGeneration * .98,
+  }
   const scopedMetrics = scope ? {
     ...metrics,
+    totalPlants: isThirdPartyScope ? scopedThirdPartyPlants.length : metrics.totalPlants,
+    onlinePlants: isThirdPartyScope ? scopedThirdPartyPlants.filter((plant) => !plant.communicationIssue).length : metrics.onlinePlants,
+    offlinePlants: isThirdPartyScope ? scopedThirdPartyPlants.filter((plant) => plant.communicationIssue).length : metrics.offlinePlants,
     totalCapacity: scopeCapacity || metrics.totalCapacity,
     currentGeneration: scopeGeneration || 0,
-    todayGeneration: metrics.todayGeneration * scale,
-    revenue: metrics.revenue * scale,
-    co2Saved: metrics.co2Saved * scale,
-    averagePr: selectedEnrichPlant?.pr ?? metrics.averagePr,
-    averageAvailability: selectedEnrichPlant?.availability ?? metrics.averageAvailability,
-    averageCuf: selectedEnrichPlant?.cuf ?? metrics.averageCuf,
+    todayGeneration: scopeTodayGeneration ?? metrics.todayGeneration * scale,
+    revenue: ((scopeTodayGeneration ?? metrics.todayGeneration * scale) * 1000 * 4.2) / 10000000,
+    co2Saved: (scopeTodayGeneration ?? metrics.todayGeneration * scale) * 0.82,
+    averagePr: selectedEnrichPlant?.pr ?? scopedThirdPartyPr ?? metrics.averagePr,
+    averageAvailability: selectedEnrichPlant?.availability ?? scopedThirdPartyAvailability ?? metrics.averageAvailability,
+    averageCuf: selectedEnrichPlant?.cuf ?? (isThirdPartyScope ? ((scopeTodayGeneration || 0) / Math.max(1, scopeCapacity * 24)) * 100 : metrics.averageCuf),
     gridExport: (scopeGeneration || 0) * .98,
-  } : metrics
+  } : combinedMetrics
   const selectedEnrichName = selectedEnrichPlant?.name
   const visibleAlarms = selectedEnrichName ? liveFeed.alarms.filter((item) => item.plant === selectedEnrichName) : liveFeed.alarms
   const visibleEvents = selectedEnrichName ? liveFeed.events.filter((item) => item.plant === selectedEnrichName) : liveFeed.events
@@ -284,7 +345,7 @@ const DashboardView = () => {
       : activeView === 'Operations' ? <OperationsLog plants={plants} onBack={() => selectView('Dashboard')} />
       : activeView === 'SLDC' || activeView === 'Reports'
       ? <SldcDashboard data={sldc} onBack={() => selectView('Dashboard')} openReports={activeView === 'Reports'} />
-      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
+      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
     </main>
   </Box>
 }
