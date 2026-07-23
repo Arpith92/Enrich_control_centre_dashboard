@@ -55,14 +55,12 @@ def plant_mapping():
         site_name = PLANT_SITE_ALIASES.get(workbook_site, workbook_site)
         plant_name = str(row[2]).strip() if row[2] else f"{site_name} Plant"
         plants = sites.setdefault(site_name, [])
-        # Demonstration rule: exactly one Bhokar plant is affected; every other plant is healthy.
-        communication_issue = site_name == "Bhokar" and len(plants) == 0
         plants.append({
             "id": f"mapping-{row_index}", "customerName": str(row[1] or "").strip(),
             "plantName": plant_name, "state": str(row[3] or "").strip(), "siteName": site_name,
             "ac": float(row[5] or 0), "dc": float(row[6] or 0),
             "commissioningDate": row[7].date().isoformat() if isinstance(row[7], datetime) else str(row[7] or ""),
-            "communicationIssue": communication_issue,
+            "communicationIssue": False,
         })
     return {"source": PLANT_MAPPING_FILE.name, "sites": sites}
 
@@ -136,6 +134,15 @@ def scada_site_details(site_name: str, response: Response):
     details = scada_reader.site_details(site_name)
     if details is None:
         raise HTTPException(404, detail="SCADA site is not configured")
+    return details
+
+
+@app.get("/api/scada/sites/{site_name}/plants/{collection_name}")
+def scada_plant_details(site_name: str, collection_name: str, response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    details = scada_reader.plant_details(site_name, collection_name)
+    if details is None:
+        raise HTTPException(404, detail="SCADA plant collection is not configured")
     return details
 
 

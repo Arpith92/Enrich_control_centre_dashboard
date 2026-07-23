@@ -9,6 +9,8 @@ on:
 jobs:
   deploy:
     runs-on: [self-hosted, windows, x64]
+    env:
+      SCADA_MONGODB_URI: ${{ secrets.SCADA_MONGODB_URI }}
 
     steps:
       - name: Checkout repository
@@ -38,4 +40,17 @@ jobs:
           }
           if ($mapping.sites.Bhokar.Count -ne 9) {
             throw "Production mapping expected 9 Bhokar plants, received $($mapping.sites.Bhokar.Count)"
+          }
+          $bhokar = Invoke-RestMethod -Uri "http://localhost:8081/api/scada/sites/Bhokar" -TimeoutSec 30
+          $expectedCollections = @(
+            "B1_Jugai_LIVE", "B2_Jagdeesh_LIVE", "B3_Supriya_LIVE",
+            "B4_Padmavati_LIVE", "B5_SoundCasting_LIVE", "B6_IMP_LIVE",
+            "B7_Suyash_LIVE", "B8_Veersha_LIVE", "B9_Omya_LIVE"
+          )
+          $actualCollections = @($bhokar.plants | ForEach-Object { $_.collection })
+          if (Compare-Object $expectedCollections $actualCollections) {
+            throw "Production Bhokar SCADA is not mapped to the expected nine *_LIVE collections"
+          }
+          if (@($bhokar.plants | Where-Object { $_.available }).Count -eq 0) {
+            throw "Production Bhokar SCADA returned no active-power values from the *_LIVE collections"
           }

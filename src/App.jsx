@@ -29,18 +29,26 @@ const workbookSiteSummary = {
   Bhokar: [9, 27.3], 'NLC Poolangal': [1, 100], BEL1MW: [1, 1], BEL2MW: [1, 2], PGCIL: [1, 85],
 }
 const bhokarPlantNames = ['Jugai', 'Jagadeesh', 'Padmavati', 'Suyesh', 'Sound Castings', 'Supriya', 'IMP', 'Veeresha', 'Omya']
+const bhokarLiveCollections = {
+  jugai: 'B1_Jugai_LIVE', jagadeesh: 'B2_Jagdeesh_LIVE', supriya: 'B3_Supriya_LIVE',
+  padmavati: 'B4_Padmavati_LIVE', 'sound castings': 'B5_SoundCasting_LIVE',
+  soundcasting: 'B5_SoundCasting_LIVE', imp: 'B6_IMP_LIVE', suyesh: 'B7_Suyash_LIVE',
+  suyash: 'B7_Suyash_LIVE', veeresha: 'B8_Veersha_LIVE', veersha: 'B8_Veersha_LIVE',
+  omya: 'B9_Omya_LIVE',
+}
+const bhokarCollectionForPlant = (name = '') => bhokarLiveCollections[name.toLowerCase().trim()]
 const createImmediatePlantMapping = () => Object.fromEntries(Object.entries(workbookSiteSummary).map(([siteName, [count, capacity]]) => [siteName,
   Array.from({ length: count }, (_, index) => ({
     id: `immediate-${siteName}-${index + 1}`,
     customerName: siteName === 'Bhokar' ? `${bhokarPlantNames[index]} customer` : `${siteName} mapped plant`,
     plantName: siteName === 'Bhokar' ? bhokarPlantNames[index] : `${siteName} Plant ${String(index + 1).padStart(2, '0')}`,
     state: '', siteName, ac: capacity / count, dc: (capacity / count) * 1.2,
-    commissioningDate: '', communicationIssue: siteName === 'Bhokar' && index === 0,
+    commissioningDate: '', communicationIssue: false,
   })),
 ]))
 
 const fmt = (n, digits = 1) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: digits })
-const viewFromHash = () => ({
+const viewFromHash = () => window.location.hash.startsWith('#bhokar') ? 'Bhokar' : ({
   '#operations-log': 'Operations', '#sldc-reports': 'Reports', '#sldc': 'SLDC', '#weather': 'Weather', '#bhokar': 'Bhokar', '#settings': 'Settings',
 }[window.location.hash] || 'Dashboard')
 const Panel = ({ title, children, className = '' }) => <section className={`ops-panel ${className}`}><h3>{title}</h3>{children}</section>
@@ -84,7 +92,7 @@ const Kpis = ({ m }) => {
     <div className="ops-kpi" key={label}><Icon /><div><span>{label}</span><b>{value}<small>{unit}</small></b><em>{note}</em></div></div>)}</div>
 }
 
-const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) => {
+const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bhokarRealtime }) => {
   const [customers, setCustomers] = useState(() => simulateThirdPartyCustomers(new Date(), siteWeather))
   const [active, setActive] = useState(null)
   useEffect(() => {
@@ -113,7 +121,9 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
     <div className="portfolio-rows portfolio-site-list">
       {showEnrich && [...plants].sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name)).map((plant) => {
         const mappedPlants = plantMapping[plant.name] || []
-        const issueCount = mappedPlants.filter((item) => item.communicationIssue).length
+        const issueCount = plant.name === 'Bhokar' && bhokarRealtime?.plants
+          ? bhokarRealtime.plants.filter((item) => !item.available || item.stale).length
+          : mappedPlants.filter((item) => item.communicationIssue).length
         const failed = (plant.name !== 'Bhokar' && (plant.communication === 'Failed' || plant.communicationIssue)) || (mappedPlants.length > 0 && issueCount === mappedPlants.length)
         const partial = issueCount > 0 && !failed
         const selected = (scope?.type === 'enrich' && scope.id === plant.id) || (scope?.type === 'enrich-plant' && scope.siteId === plant.id)
@@ -190,10 +200,11 @@ const Bottom = ({ plants }) => <div className="bottom-grid">
 const Footer = () => <footer className="status-footer">{[[SecurityOutlined,'SCADA STATUS','ONLINE'],[CloudOutlined,'API STATUS','ONLINE'],[Wifi,'NETWORK HEALTH','GOOD'],[Storage,'DATABASE','HEALTHY'],[Speed,'SERVER LOAD','24%'],[CloudOutlined,'CLOUD BACKUP','OK'],[Sync,'NEXT DATA SYNC','00:00:01']].map(([Icon,a,b])=><div key={a}><Icon/><span>{a}<b>{b}</b></span></div>)}</footer>
 
 const DashboardView = () => {
-  const { plants, metrics, clock, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites } = useSimulationData()
+  const { plants, metrics, clock, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites, bhokarRealtime } = useSimulationData()
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [activeView, setActiveView] = useState(viewFromHash)
   const [scope, setScope] = useState(null)
+  const [selectedBhokarCollection, setSelectedBhokarCollection] = useState(null)
   const [plantMapping, setPlantMapping] = useState(createImmediatePlantMapping)
   const sldc = useSldcData()
   const liveFeed = useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt })
@@ -224,7 +235,7 @@ const DashboardView = () => {
               plantName: String(row[2] || `${siteName} Plant`).trim(), state: String(row[3] || '').trim(), siteName,
               ac: Number(row[5] || 0), dc: Number(row[6] || 0),
               commissioningDate: row[7] instanceof Date ? row[7].toISOString().slice(0, 10) : String(row[7] || ''),
-              communicationIssue: siteName === 'Bhokar' && sitePlants.length === 0,
+              communicationIssue: false,
             })
           })
           setPlantMapping(sites)
@@ -337,7 +348,7 @@ const DashboardView = () => {
   return <Box className={`ops-app ${navCollapsed ? 'nav-collapsed' : ''}`}>
     <Nav collapsed={navCollapsed} onToggle={() => setNavCollapsed((value) => !value)} active={activeView === 'Operations' ? 'Alarms' : activeView} onSelect={selectView} />
     <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' || activeView === 'Bhokar' || activeView === 'Settings' ? 'sldc-main' : ''}><Header clock={clock}/>{activeView === 'Bhokar'
-      ? <BhokarDashboard onBack={() => selectView('Dashboard')} />
+      ? <BhokarDashboard initialCollection={selectedBhokarCollection} onBack={() => selectView('Dashboard')} />
       : activeView === 'Settings'
       ? <Suspense fallback={<div className="weather-loading">Loading site settings…</div>}><SiteSettings onBack={() => selectView('Dashboard')} /></Suspense>
       : activeView === 'Weather'
@@ -345,7 +356,7 @@ const DashboardView = () => {
       : activeView === 'Operations' ? <OperationsLog plants={plants} onBack={() => selectView('Dashboard')} />
       : activeView === 'SLDC' || activeView === 'Reports'
       ? <SldcDashboard data={sldc} onBack={() => selectView('Dashboard')} openReports={activeView === 'Reports'} />
-      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
+      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime} onOpenBhokarPlant={(mappedPlant) => { const collection = bhokarCollectionForPlant(mappedPlant.plantName); setSelectedBhokarCollection(collection || null); setActiveView('Bhokar'); window.location.hash = collection ? `bhokar/${collection}` : 'bhokar' }}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
     </main>
   </Box>
 }
