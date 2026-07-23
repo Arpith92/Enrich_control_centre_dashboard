@@ -19,3 +19,23 @@ jobs:
 
       - name: Build and start containers
         run: docker compose up -d --build
+
+      - name: Verify plant-level mapping
+        shell: powershell
+        run: |
+          $mapping = $null
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            try {
+              $mapping = Invoke-RestMethod -Uri "http://localhost:8081/api/plant-mapping" -TimeoutSec 10
+              break
+            } catch {
+              if ($attempt -eq 12) { throw }
+              Start-Sleep -Seconds 5
+            }
+          }
+          if ($mapping.sites.Karajagi.Count -ne 30) {
+            throw "Production mapping expected 30 Karajagi plants, received $($mapping.sites.Karajagi.Count)"
+          }
+          if ($mapping.sites.Bhokar.Count -ne 9) {
+            throw "Production mapping expected 9 Bhokar plants, received $($mapping.sites.Bhokar.Count)"
+          }
