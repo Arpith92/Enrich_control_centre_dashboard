@@ -51,6 +51,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY sldc ./sldc
 COPY server.py ./
+COPY Control_Centre_plantwise_data_mapping.xlsx ./
 COPY --from=frontend /app/dist ./dist
 
 EXPOSE 5173

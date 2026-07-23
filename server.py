@@ -391,6 +391,7 @@ def health():
         "sampleDatabase": db.sample_kind,
         "sampleCollection": f"{settings.mongodb_database}.{settings.mongodb_collection}" if settings.mongodb_uri else "SLDC_DB",
         "collectorRunning": bool(collector.thread and collector.thread.is_alive()),
+        "plantMappingAvailable": PLANT_MAPPING_FILE.exists(),
     }
 
 
