@@ -2,7 +2,7 @@ import dayjs from 'dayjs'
 
 export const plantCatalog = [
   { name: 'Mandrup', lat: 17.499444, lon: 75.766806, capacity: 43.45, state: 'Maharashtra' },
-  { name: 'Karajgi', lat: 17.454857, lon: 76.059762, capacity: 49.43, state: 'Karnataka' },
+  { name: 'Karajagi', lat: 17.454857, lon: 76.059762, capacity: 49.43, state: 'Karnataka' },
   { name: 'Kumbhari', lat: 17.610862, lon: 76.015165, capacity: 28.375, state: 'Maharashtra' },
   { name: 'Umri', lat: 19.08799, lon: 77.69605, capacity: 39.7, state: 'Maharashtra' },
   { name: 'Bhokar', lat: 19.210592, lon: 77.639007, capacity: 30.2, state: 'Maharashtra' },

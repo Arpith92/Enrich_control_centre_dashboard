@@ -24,7 +24,7 @@ const WeatherPortal = lazy(() => import('./views/WeatherPortal'))
 const SiteSettings = lazy(() => import('./views/SiteSettings'))
 
 const workbookSiteSummary = {
-  Mandrup: [28, 43.45], Karajgi: [30, 49.43], Zaheerabad: [30, 57.5], Turmamidi: [2, 9],
+  Mandrup: [28, 43.45], Karajagi: [30, 49.43], Zaheerabad: [30, 57.5], Turmamidi: [2, 9],
   Mundargi: [1, 1], Tuljapur: [9, 44.85], Kumbhari: [8, 24.775], Umri: [10, 39.7],
   Bhokar: [9, 27.3], 'NLC Poolangal': [1, 100], BEL1MW: [1, 1], BEL2MW: [1, 2], PGCIL: [1, 85],
 }
