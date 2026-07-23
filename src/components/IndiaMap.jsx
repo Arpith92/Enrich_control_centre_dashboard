@@ -25,7 +25,7 @@ const calloutPositions = {
   Zaheerabad: [25.5, 68.8],
   Mandrup: [22.5, 68.8],
   Kumbhari: [19.5, 68.8],
-  Karajgi: [16.5, 68.8],
+  Karajagi: [16.5, 68.8],
   Tuljapur: [13.5, 68.8],
   Mundargi: [10.5, 68.8],
   Turmamidi: [16.3, 85.2],
