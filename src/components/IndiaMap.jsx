@@ -15,6 +15,10 @@ const statusOf = (plant) => {
   if (plant.communication === 'Failed') return { label: 'Offline', color: '#ff4d62' }
   return { label: 'Online', color: '#42ec61' }
 }
+const normalizedPlantName = (value = '') => value.toLowerCase().replace(/^b\d+[_ -]*/, '').replace(/_live$/i, '').replace(/[^a-z0-9]/g, '')
+const bhokarLivePlant = (realtime, mappedPlant) => (realtime?.plants || []).find((plant) =>
+  normalizedPlantName(plant.name) === normalizedPlantName(mappedPlant.plantName)
+  || normalizedPlantName(plant.collection) === normalizedPlantName(mappedPlant.plantName))
 
 const calloutPositions = {
   BEL2MW: [32.2, 80.5],
@@ -76,7 +80,7 @@ const thirdPartyPlantIcon = (plant) => L.divIcon({
   iconSize: [24, 24], iconAnchor: [12, 12], tooltipAnchor: [0, -12],
 })
 
-const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) => {
+const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bhokarRealtime, onOpenBhokarPlant }) => {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef({})
@@ -161,7 +165,9 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) =
     })
     plants.forEach((plant) => {
       const mappedPlants = plantMapping[plant.name] || []
-      const issueCount = mappedPlants.filter((item) => item.communicationIssue).length
+      const issueCount = plant.name === 'Bhokar' && bhokarRealtime?.plants
+        ? bhokarRealtime.plants.filter((item) => !item.available || item.stale).length
+        : mappedPlants.filter((item) => item.communicationIssue).length
       const siteCommunicationStatus = plant.name !== 'Bhokar' && (plant.communication === 'Failed' || plant.communicationIssue)
         ? 'failed'
         : issueCount === 0 ? 'healthy' : issueCount === mappedPlants.length ? 'failed' : 'partial'
@@ -245,14 +251,22 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) =
           // fully offline (red). The parent site remains partial/amber while any of
           // its other plants are still communicating.
           const mappedCommunicationIssue = mappedPlant.communicationIssue || site.name === 'Mundargi'
-          const generation = mappedCommunicationIssue ? 0 : site.currentMw * (mappedPlant.ac / operationalCapacity)
-          const mappedStatus = mappedCommunicationIssue ? { label: 'Offline', color: '#ff4d62' } : { label: 'Online', color: '#42ec61' }
+          const livePlant = site.name === 'Bhokar' ? bhokarLivePlant(bhokarRealtime, mappedPlant) : null
+          const realtimeCommunicationIssue = site.name === 'Bhokar' && (!livePlant?.available || livePlant?.stale)
+          const plantCommunicationIssue = site.name === 'Bhokar' ? realtimeCommunicationIssue : mappedCommunicationIssue
+          const generation = site.name === 'Bhokar'
+            ? Number(livePlant?.currentMw) || 0
+            : plantCommunicationIssue ? 0 : site.currentMw * (mappedPlant.ac / operationalCapacity)
+          const mappedStatus = plantCommunicationIssue ? { label: 'Offline', color: '#ff4d62' } : { label: 'Online', color: '#42ec61' }
           const issueLabel = site.name === 'Mundargi' ? 'SCADA SERVER ISSUE' : 'COMMUNICATION DOWN'
-          const popup = `<div class="plant-popup"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><small>${site.name} · ${mappedPlant.state}</small><hr/><span>AC capacity <b>${mappedPlant.ac.toFixed(2)} MW</b></span><span>DC capacity <b>${mappedPlant.dc.toFixed(2)} MWp</b></span><span>Current generation <b>${generation.toFixed(2)} MW</b></span><span>Communication <b style="color:${mappedStatus.color}">${mappedCommunicationIssue ? issueLabel : 'HEALTHY'}</b></span><span>Commissioned <b>${mappedPlant.commissioningDate || '—'}</b></span></div>`
+          const popup = `<div class="plant-popup"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><small>${site.name} · ${mappedPlant.state}</small><hr/><span>AC capacity <b>${mappedPlant.ac.toFixed(2)} MW</b></span><span>DC capacity <b>${mappedPlant.dc.toFixed(2)} MWp</b></span><span>Current generation <b>${generation.toFixed(2)} MW</b></span><span>Communication <b style="color:${mappedStatus.color}">${plantCommunicationIssue ? issueLabel : 'HEALTHY'}</b></span><span>Commissioned <b>${mappedPlant.commissioningDate || '—'}</b></span></div>`
           const marker = L.marker([lat, lon], { icon: plantIcon(mappedStatus, true), riseOnHover: true })
-            .bindTooltip(`<div class="plant-hover"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><hr/><span>Site <strong>${site.name}</strong></span><span>Generation <strong>${generation.toFixed(2)} MW</strong></span><span>Communication <strong style="color:${mappedStatus.color}">${mappedCommunicationIssue ? issueLabel : 'HEALTHY'}</strong></span></div>`, { direction: 'top', className: 'plant-label' })
+            .bindTooltip(`<div class="plant-hover"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><hr/><span>Site <strong>${site.name}</strong></span><span>Generation <strong>${generation.toFixed(2)} MW</strong></span><span>Communication <strong style="color:${mappedStatus.color}">${plantCommunicationIssue ? issueLabel : 'HEALTHY'}</strong></span></div>`, { direction: 'top', className: 'plant-label' })
             .bindPopup(popup).addTo(layer)
-          marker.on('click', () => onSelectScope?.(scope.type === 'enrich-plant' && scope.id === mappedPlant.id ? null : { type: 'enrich-plant', id: mappedPlant.id, siteId: site.id, name: mappedPlant.plantName, parent: site, mappedPlant }))
+          marker.on('click', () => {
+            if (site.name === 'Bhokar') onOpenBhokarPlant?.(mappedPlant)
+            else onSelectScope?.(scope.type === 'enrich-plant' && scope.id === mappedPlant.id ? null : { type: 'enrich-plant', id: mappedPlant.id, siteId: site.id, name: mappedPlant.plantName, parent: site, mappedPlant })
+          })
           return [lat, lon]
         })
         layer.addTo(map)
@@ -262,7 +276,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather }) =
       }
     }
     if (scope?.type === 'enrich' && plants.length === 1 && !(plantMapping[plants[0].name] || []).length) map.setView([plants[0].lat, plants[0].lon], 7, { animate: true })
-  }, [plants, selectedEnrichId, onSelectScope, scope, plantMapping])
+  }, [plants, selectedEnrichId, onSelectScope, scope, plantMapping, bhokarRealtime, onOpenBhokarPlant])
 
   useEffect(() => {
     const map = mapRef.current

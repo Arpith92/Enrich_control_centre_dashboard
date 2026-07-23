@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowBack, Bolt, Factory, Refresh, SolarPower } from '@mui/icons-material'
 import useAutoRefresh from '../hooks/useAutoRefresh'
 import './BhokarDashboard.css'
@@ -8,11 +8,15 @@ import './BhokarResilience.css'
 const number = (value, digits = 3) => Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: digits })
 const label = (value) => String(value).replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
 
-export default function BhokarDashboard({ onBack }) {
+export default function BhokarDashboard({ onBack, initialCollection = null }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selected, setSelected] = useState('all')
+  const [selected, setSelected] = useState(initialCollection || 'all')
+
+  useEffect(() => {
+    if (initialCollection) setSelected(initialCollection)
+  }, [initialCollection])
 
   const refresh = useCallback(async () => {
     try {
@@ -27,7 +31,7 @@ export default function BhokarDashboard({ onBack }) {
     }
   }, [])
 
-  useAutoRefresh(refresh, 60000)
+  useAutoRefresh(refresh, 1000)
   const plants = useMemo(() => selected === 'all'
     ? (data?.plants || [])
     : (data?.plants || []).filter((plant) => plant.collection === selected), [data, selected])
@@ -35,7 +39,7 @@ export default function BhokarDashboard({ onBack }) {
   return <div className="bhokar-page">
     <div className="bhokar-toolbar">
       <button onClick={onBack}><ArrowBack /> Dashboard</button>
-      <div><h1>BHOKAR · LIVE SCADA</h1><span>Individual customer plants and inverter parameters · 1-minute average data</span></div>
+      <div><h1>BHOKAR · LIVE SCADA</h1><span>Nine customer plants · latest documents from *_LIVE collections · 1-second refresh</span></div>
       <button onClick={refresh}><Refresh /> Refresh</button>
     </div>
 
@@ -69,13 +73,14 @@ export default function BhokarDashboard({ onBack }) {
               <td>INV{inverter.inverter}</td><td>{number(inverter.activePowerMw)} MW</td><td>{number(inverter.dailyGenerationMWh)} MWh</td><td>{number(inverter.cumulativeGenerationMWh)} MWh</td><td><em className="live-status">LIVE</em></td>
             </tr>)}</tbody>
           </table></div>
-          <details className="raw-scada-tags">
-            <summary>All collection columns · exact SCADA tag values</summary>
-            <div className="raw-tag-grid">
-              {Object.entries(plant.rawTags || {}).map(([tag, value]) => <div key={tag}>
-                <code>{tag}</code><strong>{String(value ?? '—')}</strong>
-              </div>)}
-            </div>
+          <details className="raw-scada-tags" open={selected !== 'all'}>
+            <summary>All real-time collection values · refreshed every second</summary>
+            <div className="inverter-table-wrap"><table className="inverter-table raw-values-table">
+              <thead><tr><th>Collection field</th><th>Latest value</th></tr></thead>
+              <tbody>{Object.entries(plant.rawTags || {}).map(([tag, value]) => <tr key={tag}>
+                <td><code>{tag}</code></td><td>{String(value ?? '—')}</td>
+              </tr>)}</tbody>
+            </table></div>
           </details>
         </>}
       </section>)}

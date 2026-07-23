@@ -1,4 +1,4 @@
-from sldc.scada_realtime import _document_time, extract_inverter_values
+from sldc.scada_realtime import _document_time, extract_inverter_values, extract_plant_totals
 
 
 def test_extracts_flat_and_nested_inverter_tags_up_to_twenty():
@@ -28,3 +28,14 @@ def test_extracts_tag_value_record_shape():
 def test_timestamp_ist_is_interpreted_as_india_time():
     timestamp = _document_time({"timestamp_IST": "2026-07-16T12:30:00"})
     assert timestamp.utcoffset().total_seconds() == 19800
+
+
+def test_extracts_aggregate_live_collection_values():
+    result = extract_plant_totals({
+        "Active_Power": "12,500",
+        "DailyGeneration": {"value": 4450},
+        "payload": {"Total_Generation": 987654},
+    })
+    assert result["active_power"] == 12500
+    assert result["daily_generation"] == 4450
+    assert result["cumulative_generation"] == 987654

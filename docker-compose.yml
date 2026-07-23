@@ -11,6 +11,7 @@ services:
       CHROME_BINARY: /usr/bin/chromium
       CHROMEDRIVER_PATH: /usr/bin/chromedriver
       TESSERACT_CMD: /usr/bin/tesseract
+      SCADA_MONGODB_URI: ${SCADA_MONGODB_URI:-}
     restart: unless-stopped
 
   nginx:

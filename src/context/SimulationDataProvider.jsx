@@ -30,6 +30,7 @@ export const SimulationDataProvider = ({ children }) => {
   const [history, setHistory] = useState([])
   const [siteWeather, setSiteWeather] = useState({})
   const [weatherUpdatedAt, setWeatherUpdatedAt] = useState(null)
+  const [bhokarRealtime, setBhokarRealtime] = useState(null)
   const [thirdPartyWeatherSites, setThirdPartyWeatherSites] = useState(() => getConfiguredThirdPartyCustomers().flatMap((customer) => customer.plants.map((plant) => ({ ...plant, name: plant.site, state: customer.name, thirdParty: true }))))
   const weatherRef = useRef({})
   const scadaRef = useRef({})
@@ -61,10 +62,6 @@ export const SimulationDataProvider = ({ children }) => {
         lastUpdated: 'No data - SCADA server issue',
       }
     }
-    // Bhokar is demonstrated plant-wise: one mapped plant is unavailable while
-    // the remaining plants continue to generate from capacity and live GTI.
-    // A site-level SCADA zero must not suppress the healthy plant simulation.
-    if (plant.name === 'Bhokar') return plant
     const live = scadaRef.current[plant.name.toLowerCase()]
     if (!live) return plant
     const feedExpired = Date.now() - Number(live.receivedAt || 0) > 180000
@@ -129,6 +126,31 @@ export const SimulationDataProvider = ({ children }) => {
 
   // Source collections contain one-minute averages; do not query them faster.
   useAutoRefresh(loadScada, 60000)
+
+  const loadBhokarRealtime = useCallback(async () => {
+    try {
+      const response = await fetch('/api/scada/sites/Bhokar', { cache: 'no-store' })
+      if (!response.ok) throw new Error(`Bhokar SCADA API ${response.status}`)
+      const payload = await response.json()
+      setBhokarRealtime(payload)
+      const available = (payload.plants || []).filter((plant) => plant.available && !plant.stale)
+      setPlants((current) => current.map((plant) => plant.name !== 'Bhokar' ? plant : {
+        ...plant,
+        currentMw: Number(payload.currentMw) || 0,
+        todayMwh: Number(payload.dailyGenerationMWh) || 0,
+        cumulativeGenerationMWh: Number(payload.cumulativeGenerationMWh) || 0,
+        telemetrySource: 'SCADA',
+        telemetrySampleType: '1-second live collection',
+        communication: available.length === 0 ? 'Failed' : available.length < (payload.plants || []).length ? 'Degraded' : 'Healthy',
+        communicationIssue: available.length < (payload.plants || []).length,
+        lastUpdated: payload.timestamp ? dayjs(payload.timestamp).format('HH:mm:ss') : 'No live sample',
+      }))
+    } catch (error) {
+      console.warn('Bhokar plant-level SCADA unavailable; retaining the last live values.', error)
+    }
+  }, [])
+
+  useAutoRefresh(loadBhokarRealtime, 1000)
 
   useEffect(() => {
     const refresh = () => setThirdPartyWeatherSites(getConfiguredThirdPartyCustomers().flatMap((customer) => customer.plants.map((plant) => ({ ...plant, name: plant.site, state: customer.name, thirdParty: true }))))
@@ -260,7 +282,7 @@ export const SimulationDataProvider = ({ children }) => {
   }
 
   return (
-    <SimulationContext.Provider value={{ plants, metrics, events, clock, bootTime, history, refreshData, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites }}>
+    <SimulationContext.Provider value={{ plants, metrics, events, clock, bootTime, history, refreshData, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites, bhokarRealtime }}>
       {children}
     </SimulationContext.Provider>
   )
