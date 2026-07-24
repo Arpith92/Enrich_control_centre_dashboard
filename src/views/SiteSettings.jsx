@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import readXlsxFile from 'read-excel-file/browser'
-import { addThirdPartySites, getConfiguredThirdPartyCustomers, removeThirdPartySite } from '../data/thirdPartySites'
+import { addThirdPartySites, getConfiguredThirdPartyCustomers, removeThirdPartySite, updateThirdPartySite, upsertThirdPartySites } from '../data/thirdPartySites'
 
 const emptyForm = { customerName: '', siteName: '', ac: '', dc: '', lat: '', lon: '' }
 const headers = ['Customer Name', 'Site Name', 'AC Capacity (MW)', 'DC Capacity (MWp)', 'Lat', 'Long']
@@ -8,14 +8,17 @@ const headers = ['Customer Name', 'Site Name', 'AC Capacity (MW)', 'DC Capacity 
 export default function SiteSettings({ onBack }) {
   const [, setRevision] = useState(0)
   const [form, setForm] = useState(emptyForm)
+  const [editingId, setEditingId] = useState(null)
   const [message, setMessage] = useState('')
   const customers = getConfiguredThirdPartyCustomers()
   const sites = customers.flatMap((customer) => customer.plants.map((plant) => ({ ...plant, customerName: customer.name })))
   const refresh = () => setRevision((value) => value + 1)
   const save = (event) => {
     event.preventDefault()
-    addThirdPartySites([{ ...form, ac: Number(form.ac), dc: Number(form.dc), lat: Number(form.lat), lon: Number(form.lon) }])
-    setForm(emptyForm); setMessage('Site added successfully.'); refresh()
+    const values = { ...form, ac: Number(form.ac), dc: Number(form.dc), lat: Number(form.lat), lon: Number(form.lon) }
+    if (editingId) updateThirdPartySite(editingId, values)
+    else addThirdPartySites([values])
+    setForm(emptyForm); setEditingId(null); setMessage(editingId ? 'Site details updated successfully.' : 'Site added successfully.'); refresh()
   }
   const upload = async (event) => {
     const file = event.target.files?.[0]
@@ -30,18 +33,20 @@ export default function SiteSettings({ onBack }) {
         ac: Number(row[column('AC Capacity (MW)')]), dc: Number(row[column('DC Capacity (MWp)')]), lat: Number(row[column('Lat')]), lon: Number(row[column('Long')]),
       }))
       if (!imported.length) throw new Error('No valid site rows found.')
-      addThirdPartySites(imported); setMessage(`${imported.length} site(s) imported successfully.`); refresh()
+      upsertThirdPartySites(imported); setMessage(`${imported.length} site(s) added or updated successfully.`); refresh()
     } catch (error) { setMessage(error.message) }
     event.target.value = ''
   }
   return <div className="site-settings">
-    <header><div><span>PORTFOLIO CONFIGURATION</span><h1>Third-Party Site Management</h1><p>Add, remove, or import commissioned plant records.</p></div><button onClick={onBack}>← Dashboard</button></header>
-    <section className="settings-add-card"><h2>Add a site</h2><form onSubmit={save}>
+    <header><div><span>PORTFOLIO CONFIGURATION</span><h1>Third-Party Site Management</h1><p>Add, edit, rename, remove, or import commissioned plant records.</p></div><button onClick={onBack}>← Dashboard</button></header>
+    <section className="settings-add-card"><h2>{editingId ? 'Edit existing site' : 'Add a site'}</h2><form onSubmit={save}>
       {Object.entries({ customerName: 'Customer Name', siteName: 'Site Name', ac: 'AC Capacity (MW)', dc: 'DC Capacity (MWp)', lat: 'Latitude', lon: 'Longitude' }).map(([key, label]) => <label key={key}><span>{label}</span><input required type={['ac','dc','lat','lon'].includes(key) ? 'number' : 'text'} step="any" value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })}/></label>)}
-      <button type="submit">Add site</button><label className="excel-upload"><span>Import Excel</span><input type="file" accept=".xlsx" onChange={upload}/></label>
+      <button type="submit">{editingId ? 'Save changes' : 'Add site'}</button>
+      {editingId && <button type="button" onClick={() => { setEditingId(null); setForm(emptyForm) }}>Cancel</button>}
+      <label className="excel-upload"><span>Import Excel</span><input type="file" accept=".xlsx" onChange={upload}/></label>
     </form>{message && <p className="settings-message">{message}</p>}</section>
-    <section className="settings-sites-card"><div><h2>Existing third-party plants</h2><span>{sites.length} plants</span></div><div className="settings-table-wrap"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}<th>Action</th></tr></thead><tbody>
-      {sites.map((site) => <tr key={site.id}><td>{site.customerName}</td><td>{site.site}</td><td>{site.ac}</td><td>{site.dc}</td><td>{site.lat}</td><td>{site.lon}</td><td><button onClick={() => { removeThirdPartySite(site.id); setMessage(`${site.site} removed.`); refresh() }}>Remove</button></td></tr>)}
+    <section className="settings-sites-card"><div><h2>Existing third-party plants</h2><span>{sites.length} plants</span></div><div className="settings-table-wrap"><table><thead><tr><th>Sr. No.</th>{headers.map((header) => <th key={header}>{header}</th>)}<th>Actions</th></tr></thead><tbody>
+      {sites.map((site, index) => <tr key={site.id}><td>{index + 1}</td><td>{site.customerName}</td><td>{site.site}</td><td>{site.ac.toFixed(2)}</td><td>{site.dc.toFixed(3)}</td><td>{site.lat}</td><td>{site.lon}</td><td className="settings-actions"><button className="edit" onClick={() => { setEditingId(site.id); setForm({ customerName: site.customerName, siteName: site.site, ac: site.ac, dc: site.dc, lat: site.lat, lon: site.lon }); setMessage(''); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>Edit</button><button onClick={() => { removeThirdPartySite(site.id); setMessage(`${site.site} removed.`); if (editingId === site.id) { setEditingId(null); setForm(emptyForm) } refresh() }}>Remove</button></td></tr>)}
     </tbody></table></div></section>
   </div>
 }

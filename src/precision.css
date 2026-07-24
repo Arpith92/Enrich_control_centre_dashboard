@@ -288,6 +288,8 @@ button.portfolio-section:hover,
 .settings-sites-card th { position: sticky; top: 0; z-index: 1; padding: 7px; background: #071c2e; color: #7792a8; font-size: 7px; text-align: left; text-transform: uppercase; }
 .settings-sites-card td { padding: 6px 7px; border-top: 1px solid #173149; font-size: 9px; }
 .settings-sites-card td button { padding: 4px 7px; border: 1px solid #7b3440; border-radius: 3px; background: #2a1018; color: #ff7180; cursor: pointer; }
+.settings-actions { display: flex; gap: 5px; }
+.settings-sites-card td button.edit { border-color: #267db2; background: #09253c; color: #83d4ff; }
 @media (max-width: 1100px) { .settings-add-card form { grid-template-columns: repeat(2,1fr); } }
 .kpi-strip { grid-template-columns: repeat(8, minmax(110px, 1fr)); }
 @media (max-width: 1300px) { .kpi-strip { grid-template-columns: repeat(4, 1fr); } }

@@ -107,9 +107,12 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
     setActive(next)
     window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: next }))
   }
-  const totalCapacity = customers.reduce((sum, customer) => sum + customer.ac, 0)
+  const totalCapacity = customers.reduce((sum, customer) => sum + customer.dc, 0)
   const totalGeneration = customers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
-  const enrichCapacity = plants.reduce((sum, plant) => sum + plant.capacity, 0)
+  const enrichCapacity = plants.reduce((sum, plant) => {
+    const mappedDc = (plantMapping[plant.name] || []).reduce((total, mappedPlant) => total + mappedPlant.dc, 0)
+    return sum + (mappedDc || plant.capacity * 1.2)
+  }, 0)
   const enrichGeneration = plants.reduce((sum, plant) => sum + plant.currentMw, 0)
   const showEnrich = scope?.type !== 'portfolio-third-party'
   const showThirdParty = scope?.type !== 'portfolio-enrich'
@@ -117,7 +120,7 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
   const displayedGeneration = showEnrich && showThirdParty ? enrichGeneration + totalGeneration : showEnrich ? enrichGeneration : totalGeneration
   const totalLabel = showEnrich && showThirdParty ? 'ALL SITES' : showEnrich ? 'ENRICH SITES' : 'THIRD-PARTY SITES'
   return <Panel title="ALL COMMISSIONED SITES" className="third-party-portfolio">
-    <div className="portfolio-head"><span>Portfolio / Site</span><span>Capacity</span><span>Generation</span></div>
+    <div className="portfolio-head"><span>Portfolio / Site</span><span>DC Capacity</span><span>Generation</span></div>
     <div className="portfolio-rows portfolio-site-list">
       {showEnrich && [...plants].sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name)).map((plant) => {
         const mappedPlants = plantMapping[plant.name] || []
@@ -127,13 +130,14 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
         const failed = (plant.name !== 'Bhokar' && (plant.communication === 'Failed' || plant.communicationIssue)) || (mappedPlants.length > 0 && issueCount === mappedPlants.length)
         const partial = issueCount > 0 && !failed
         const selected = (scope?.type === 'enrich' && scope.id === plant.id) || (scope?.type === 'enrich-plant' && scope.siteId === plant.id)
-        return <button className={`portfolio-site enrich-site-row ${failed ? 'site-offline' : partial ? 'site-partial' : 'site-online'} ${selected ? 'active' : ''}`} title={failed ? 'All plants have communication issues' : partial ? `${issueCount} of ${mappedPlants.length} plants has a communication issue` : `${mappedPlants.length || 1} plant(s) · all communication healthy`} key={plant.id} onClick={() => onSelectScope(selected ? null : { type: 'enrich', id: plant.id, name: plant.name })}><span><b>{plant.name}</b></span><strong>{plant.capacity.toFixed(0)} MW</strong><strong>{plant.currentMw.toFixed(2)} MW</strong></button>
+        const dcCapacity = mappedPlants.reduce((sum, mappedPlant) => sum + mappedPlant.dc, 0) || plant.capacity * 1.2
+        return <button className={`portfolio-site enrich-site-row ${failed ? 'site-offline' : partial ? 'site-partial' : 'site-online'} ${selected ? 'active' : ''}`} title={failed ? 'All plants have communication issues' : partial ? `${issueCount} of ${mappedPlants.length} plants has a communication issue` : `${mappedPlants.length || 1} plant(s) · all communication healthy`} key={plant.id} onClick={() => onSelectScope(selected ? null : { type: 'enrich', id: plant.id, name: plant.name })}><span><b>{plant.name}</b></span><strong>{dcCapacity.toFixed(2)} MWp</strong><strong>{plant.currentMw.toFixed(2)} MW</strong></button>
       })}
       {showThirdParty && [...customers].sort((a, b) => b.ac - a.ac || a.name.localeCompare(b.name)).map((customer) => <div className={`portfolio-customer-section ${active === customer.id ? 'active' : ''}`} key={customer.id}>
-        <button className={`portfolio-site customer-site-row site-third-party comm-${customer.communicationStatus} ${scope?.customerId === customer.id || scope?.id === customer.id ? 'active' : ''}`} title={customer.communicationIssueCount ? `${customer.communicationIssueCount} of ${customer.plants.length} plants have communication issues` : 'All plants communicating'} onClick={() => { const isSelected = scope?.customerId === customer.id || scope?.id === customer.id; select(customer.id); onSelectScope(isSelected ? null : { type: 'customer', id: customer.id, customerId: customer.id, name: customer.name, customer }) }}><span><b>{customer.name}</b></span><strong>{customer.ac.toFixed(0)} MW</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong></button>
+        <button className={`portfolio-site customer-site-row site-third-party comm-${customer.communicationStatus} ${scope?.customerId === customer.id || scope?.id === customer.id ? 'active' : ''}`} title={customer.communicationIssueCount ? `${customer.communicationIssueCount} of ${customer.plants.length} plants have communication issues` : 'All plants communicating'} onClick={() => { const isSelected = scope?.customerId === customer.id || scope?.id === customer.id; select(customer.id); onSelectScope(isSelected ? null : { type: 'customer', id: customer.id, customerId: customer.id, name: customer.name, customer }) }}><span><b>{customer.name}</b></span><strong>{customer.dc.toFixed(2)} MWp</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong></button>
       </div>)}
     </div>
-    <button className={`portfolio-total ${!scope ? 'active' : ''}`} onClick={() => { setActive(null); window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: null })); onSelectScope(null) }} title="Clear filter and show all sites"><span><b>{totalLabel}</b>{scope && <small>Click to clear filter</small>}</span><strong>{displayedCapacity.toFixed(0)} MW</strong><strong>{displayedGeneration.toFixed(2)} MW</strong></button>
+    <button className={`portfolio-total ${!scope ? 'active' : ''}`} onClick={() => { setActive(null); window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: null })); onSelectScope(null) }} title="Clear filter and show all sites"><span><b>{totalLabel}</b>{scope && <small>Click to clear filter</small>}</span><strong>{displayedCapacity.toFixed(2)} MWp</strong><strong>{displayedGeneration.toFixed(2)} MW</strong></button>
   </Panel>
 }
 
