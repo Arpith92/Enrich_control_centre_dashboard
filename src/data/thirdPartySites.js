@@ -19,6 +19,9 @@ export const thirdPartyCustomers = [
   customer('hero-future', 'Hero Future', 14.77, 77.04, [
     ['Aurad','Karnataka',40,44],['Chittapur','Karnataka',20,22],['Chamrajnagar','Karnataka',20,22],['Gundlupete','Karnataka',20,22],
   ]),
+  customer('jsw-renewable', 'JSW Renewable Energy', 24.09875, 69.5558889, [
+    ['Khavda','Gujarat',300,429.045],
+  ]),
 ]
 
 // Coordinates are kept separately so the compact plant table above stays readable.
@@ -31,12 +34,15 @@ const coordinates = {
   atnu: [[19.471184,78.218099],[20.434868,75.196062],[19.827706,76.404214],[19.002756,76.164448],[19.270447,74.389744],[17.937531,75.668513],[18.577171,75.278112]],
   reliance: [[19.004785,75.679079],[18.6804298,75.6578815],[19.082094,75.705406],[18.9984945,76.0012898],[18.953309,75.584398],[18.947807,75.953622],[19.2786,75.820063],[19.37771,75.6362],[19.366559,75.564548],[19.353177,75.826482],[19.31342,75.714212],[19.2659719,75.748256],[19.2597214,75.504922],[19.089807,75.207476],[18.7389251,75.2940222],[18.7389251,75.2940222],[19.008483,75.040202],[19.046101,74.955608],[18.854967,75.0631223],[18.7085686,76.6829592],[18.7384538,76.3892307],[18.845862,76.259675],[18.9575265,76.4756482],[18.83687,76.6111245]],
   'hero-future': [[18.18654,77.466461],[16.877121,76.989174],[12.059544,76.961236],[11.939678,76.735493]],
+  'jsw-renewable': [[24.09875,69.5558889]],
 }
 
 const CONFIG_KEY = 'enrich-third-party-site-config-v1'
 const readConfig = () => {
-  try { return JSON.parse(window.localStorage.getItem(CONFIG_KEY)) || { added: [], removed: [] } }
-  catch { return { added: [], removed: [] } }
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(CONFIG_KEY)) || {}
+    return { added: stored.added || [], removed: stored.removed || [], updated: stored.updated || {} }
+  } catch { return { added: [], removed: [], updated: {} } }
 }
 const writeConfig = (config) => {
   window.localStorage.setItem(CONFIG_KEY, JSON.stringify(config))
@@ -51,35 +57,71 @@ export const addThirdPartySites = (sites) => {
 
 export const removeThirdPartySite = (siteId) => {
   const config = readConfig()
+  const updated = { ...config.updated }
+  delete updated[siteId]
   writeConfig({
     added: config.added.filter((site) => site.id !== siteId),
     removed: siteId.startsWith('custom-') ? config.removed : [...new Set([...config.removed, siteId])],
+    updated,
   })
+}
+
+export const updateThirdPartySite = (siteId, site) => {
+  const config = readConfig()
+  const normalized = {
+    customerName: site.customerName.trim(), siteName: site.siteName.trim(),
+    ac: Number(site.ac), dc: Number(site.dc), lat: Number(site.lat), lon: Number(site.lon),
+  }
+  if (siteId.startsWith('custom-')) {
+    writeConfig({ ...config, added: config.added.map((entry) => entry.id === siteId ? { ...entry, ...normalized } : entry) })
+  } else {
+    writeConfig({ ...config, removed: config.removed.filter((id) => id !== siteId), updated: { ...config.updated, [siteId]: normalized } })
+  }
+}
+
+export const upsertThirdPartySites = (sites) => {
+  const existing = getConfiguredThirdPartyCustomers().flatMap((customer) =>
+    customer.plants.map((plant) => ({ ...plant, customerName: customer.name })))
+  const additions = []
+  sites.forEach((site) => {
+    const match = existing.find((entry) =>
+      entry.customerName.toLowerCase() === site.customerName.trim().toLowerCase()
+      && entry.site.toLowerCase() === site.siteName.trim().toLowerCase())
+    if (match) updateThirdPartySite(match.id, site)
+    else additions.push(site)
+  })
+  if (additions.length) addThirdPartySites(additions)
 }
 
 export const getConfiguredThirdPartyCustomers = () => {
   const config = readConfig()
   const removed = new Set(config.removed)
-  const configured = thirdPartyCustomers.map((entry) => ({
-    ...entry,
-    plants: entry.plants.map((plant, index) => ({ ...plant, lat: coordinates[entry.id][index][0], lon: coordinates[entry.id][index][1] })).filter((plant) => !removed.has(plant.id)),
-  })).filter((entry) => entry.plants.length)
-  const additionsByCustomer = new Map()
-  config.added.forEach((site) => {
-    const name = site.customerName.trim()
-    if (!additionsByCustomer.has(name)) additionsByCustomer.set(name, [])
-    additionsByCustomer.get(name).push({ id: site.id, site: site.siteName, cluster: 'Custom', ac: Number(site.ac), dc: Number(site.dc), lat: Number(site.lat), lon: Number(site.lon) })
-  })
-  additionsByCustomer.forEach((newPlants, name) => {
-    let entry = configured.find((item) => item.name.toLowerCase() === name.toLowerCase())
-    if (entry) entry.plants = [...entry.plants, ...newPlants]
-    else {
-      const id = `custom-customer-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
-      entry = { id, name, plants: newPlants }
-      configured.push(entry)
+  const baseSites = thirdPartyCustomers.flatMap((entry) => entry.plants.map((plant, index) => {
+    const override = config.updated[plant.id] || {}
+    return {
+      ...plant,
+      customerId: entry.id,
+      customerName: override.customerName || entry.name,
+      site: override.siteName || plant.site,
+      ac: Number(override.ac ?? plant.ac), dc: Number(override.dc ?? plant.dc),
+      lat: Number(override.lat ?? coordinates[entry.id][index][0]),
+      lon: Number(override.lon ?? coordinates[entry.id][index][1]),
     }
+  })).filter((plant) => !removed.has(plant.id))
+  const addedSites = config.added.map((site) => ({
+    id: site.id, customerId: null, customerName: site.customerName.trim(), site: site.siteName,
+    cluster: 'Custom', ac: Number(site.ac), dc: Number(site.dc), lat: Number(site.lat), lon: Number(site.lon),
+  }))
+  const groups = new Map()
+  ;[...baseSites, ...addedSites].forEach((plant) => {
+    const key = plant.customerName.toLowerCase()
+    if (!groups.has(key)) groups.set(key, {
+      id: plant.customerId || `custom-customer-${plant.customerName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      name: plant.customerName, plants: [],
+    })
+    groups.get(key).plants.push(plant)
   })
-  return configured.map((entry) => ({
+  return [...groups.values()].map((entry) => ({
     ...entry,
     lat: entry.plants.reduce((sum, plant) => sum + plant.lat, 0) / entry.plants.length,
     lon: entry.plants.reduce((sum, plant) => sum + plant.lon, 0) / entry.plants.length,
@@ -113,6 +155,7 @@ export const simulateThirdPartyCustomers = (date = new Date(), siteWeather = {})
     return {
       ...entry, plants,
       ac: plants.reduce((sum, plant) => sum + plant.ac, 0),
+      dc: plants.reduce((sum, plant) => sum + plant.dc, 0),
       simulatedMw: plants.reduce((sum, plant) => sum + plant.simulatedMw, 0),
       todayMwh: plants.reduce((sum, plant) => sum + plant.todayMwh, 0),
       communicationIssueCount, communicationStatus,
