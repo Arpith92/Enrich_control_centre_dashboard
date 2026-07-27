@@ -1,6 +1,6 @@
 // Source: Thrid_party_site_details.xlsx. Third-party telemetry is simulated only.
-const customer = (id, name, lat, lon, rows) => ({
-  id, name, lat, lon,
+const customer = (id, name, lat, lon, rows, options = {}) => ({
+  id, name, lat, lon, ...options,
   plants: rows.map(([site, cluster, ac, dc], index) => ({
     id: `${id}-${index + 1}`, site, cluster: cluster || 'Independent', ac, dc,
   })),
@@ -22,6 +22,22 @@ export const thirdPartyCustomers = [
   customer('jsw-renewable', 'JSW Renewable Energy', 24.09875, 69.5558889, [
     ['Khavda','Gujarat',300,429.045],
   ]),
+  customer('regency-ispat', 'Regency ISPAT Private Limited', 17.610862, 76.015165, [
+    ['Kumbhari','Maharashtra',3.6,4.5],
+  ]),
+  customer('common-infra-tuljapur', 'Tuljapur Common Infra', 17.897663, 75.94767, [
+    ['AMP Solar Power System Pvt. Ltd.','Tuljapur',20,30],
+    ['AMP Energy Green 12 Pvt. Ltd.','Tuljapur',10,13.5],
+    ['AMP Energy Green 15 Pvt. Ltd.','Tuljapur',10,15.5],
+    ['AMP Energy Green 11 Pvt. Ltd.','Tuljapur',10,16],
+    ['AMP Energy C&I 1 Pvt. Ltd.','Tuljapur',3.13,5],
+  ], { commonInfra: true, noTelemetry: true }),
+  customer('common-infra-mandrup', 'Mandrup Common Infra', 17.499444, 75.766806, [
+    ['Agrawal Minerals (Goa) Pvt. Ltd.','Mandrup',4,4],
+    ['Saidpur Jute Co. Ltd.','Mandrup',0.6,0.6],
+    ['Gangadhar Nasingdas Agrawal','Mandrup',1,1],
+    ['Power Genesis Pvt. Ltd.','Mandrup',1.2,1.2],
+  ], { commonInfra: true, noTelemetry: true }),
 ]
 
 // Coordinates are kept separately so the compact plant table above stays readable.
@@ -35,9 +51,20 @@ const coordinates = {
   reliance: [[19.004785,75.679079],[18.6804298,75.6578815],[19.082094,75.705406],[18.9984945,76.0012898],[18.953309,75.584398],[18.947807,75.953622],[19.2786,75.820063],[19.37771,75.6362],[19.366559,75.564548],[19.353177,75.826482],[19.31342,75.714212],[19.2659719,75.748256],[19.2597214,75.504922],[19.089807,75.207476],[18.7389251,75.2940222],[18.7389251,75.2940222],[19.008483,75.040202],[19.046101,74.955608],[18.854967,75.0631223],[18.7085686,76.6829592],[18.7384538,76.3892307],[18.845862,76.259675],[18.9575265,76.4756482],[18.83687,76.6111245]],
   'hero-future': [[18.18654,77.466461],[16.877121,76.989174],[12.059544,76.961236],[11.939678,76.735493]],
   'jsw-renewable': [[24.09875,69.5558889]],
+  'regency-ispat': [[17.610862,76.015165]],
+  'common-infra-tuljapur': [[17.897663,75.94767],[17.897663,75.94767],[17.897663,75.94767],[17.897663,75.94767],[17.897663,75.94767]],
+  'common-infra-mandrup': [[17.499444,75.766806],[17.499444,75.766806],[17.499444,75.766806],[17.499444,75.766806]],
 }
 
 const CONFIG_KEY = 'enrich-third-party-site-config-v1'
+const normalizedCustomerKey = (value = '') => value.trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim()
+const canonicalCustomerKey = (value = '') => {
+  const key = normalizedCustomerKey(value)
+  if (key === 'reliance' || key === 'reliance power') return 'reliance power'
+  if (key === 'hero' || key === 'hero future') return 'hero future'
+  if (key === 'jsw' || key === 'jsw renewable' || key === 'jsw renewable energy') return 'jsw renewable energy'
+  return key
+}
 const readConfig = () => {
   try {
     const stored = JSON.parse(window.localStorage.getItem(CONFIG_KEY)) || {}
@@ -85,7 +112,7 @@ export const upsertThirdPartySites = (sites) => {
   const additions = []
   sites.forEach((site) => {
     const match = existing.find((entry) =>
-      entry.customerName.toLowerCase() === site.customerName.trim().toLowerCase()
+      canonicalCustomerKey(entry.customerName) === canonicalCustomerKey(site.customerName)
       && entry.site.toLowerCase() === site.siteName.trim().toLowerCase())
     if (match) updateThirdPartySite(match.id, site)
     else additions.push(site)
@@ -102,6 +129,7 @@ export const getConfiguredThirdPartyCustomers = () => {
       ...plant,
       customerId: entry.id,
       customerName: override.customerName || entry.name,
+      commonInfra: Boolean(entry.commonInfra), noTelemetry: Boolean(entry.noTelemetry),
       site: override.siteName || plant.site,
       ac: Number(override.ac ?? plant.ac), dc: Number(override.dc ?? plant.dc),
       lat: Number(override.lat ?? coordinates[entry.id][index][0]),
@@ -114,10 +142,10 @@ export const getConfiguredThirdPartyCustomers = () => {
   }))
   const groups = new Map()
   ;[...baseSites, ...addedSites].forEach((plant) => {
-    const key = plant.customerName.toLowerCase()
+    const key = canonicalCustomerKey(plant.customerName)
     if (!groups.has(key)) groups.set(key, {
       id: plant.customerId || `custom-customer-${plant.customerName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-      name: plant.customerName, plants: [],
+      name: plant.customerName, plants: [], commonInfra: Boolean(plant.commonInfra), noTelemetry: Boolean(plant.noTelemetry),
     })
     groups.get(key).plants.push(plant)
   })
@@ -138,8 +166,8 @@ export const simulateThirdPartyCustomers = (date = new Date(), siteWeather = {})
       const dailyGtiKwhM2 = Number(weather?.gti_kwh_m2)
       const efficiency = 0.76 + ((plantIndex * 17 + customerIndex * 11) % 12) / 100
       const irradianceFactor = Number.isFinite(gtiWm2) ? Math.max(0, gtiWm2) / 1000 : solarCurve
-      const simulatedMw = Math.min(plant.ac, plant.ac * irradianceFactor * efficiency)
-      const todayMwh = Number.isFinite(dailyGtiKwhM2)
+      const simulatedMw = entry.noTelemetry ? 0 : Math.min(plant.ac, plant.ac * irradianceFactor * efficiency)
+      const todayMwh = entry.noTelemetry ? 0 : Number.isFinite(dailyGtiKwhM2)
         ? plant.ac * Math.max(0, dailyGtiKwhM2) * efficiency
         : plant.ac * solarCurve * 4.5 * efficiency
       const { lat, lon } = plant
@@ -147,7 +175,7 @@ export const simulateThirdPartyCustomers = (date = new Date(), siteWeather = {})
       return {
         ...plant, lat, lon, efficiency, gtiWm2: Number.isFinite(gtiWm2) ? gtiWm2 : null,
         simulatedMw, todayMwh, communicationIssue,
-        status: communicationIssue ? 'Communication issue' : simulatedMw <= 0.01 ? 'Standby' : 'Generating',
+        status: entry.noTelemetry ? 'No real-time data' : communicationIssue ? 'Communication issue' : simulatedMw <= 0.01 ? 'Standby' : 'Generating',
       }
     })
     const communicationIssueCount = plants.filter((plant) => plant.communicationIssue).length

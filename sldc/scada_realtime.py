@@ -14,9 +14,9 @@ from pymongo.errors import ConfigurationError
 from .config import settings
 
 log = logging.getLogger(__name__)
-TAG_RE = re.compile(r"^INV(?:ERTER)?[_ -]?(\d{1,2})[_ -](ActivePower|Cumulative[_ -]Generation)$", re.I)
+TAG_RE = re.compile(r"^INV(?:ERTER)?[_ -]?0?(\d{1,2})[_ -](Active[_ -]?Power|Cumulative[_ -]?Generation)$", re.I)
 DETAIL_TAG_RE = re.compile(
-    r"^INV(?:ERTER)?[_ -]?(\d{1,2})[_ -](ActivePower|Daily[_ -]Generation|Cumulative[_ -]Generation)$", re.I,
+    r"^INV(?:ERTER)?[_ -]?0?(\d{1,2})[_ -](Active[_ -]?Power|Daily[_ -]?Generation|Cumulative[_ -]?Generation)$", re.I,
 )
 TIME_KEYS = ("timestamp_IST", "timestamp", "Timestamp", "time", "Time", "datetime", "DateTime", "createdAt", "updatedAt")
 PLANT_TOTAL_TAGS = {
@@ -118,7 +118,7 @@ def extract_inverter_values(document: dict) -> dict[str, dict[int, float]]:
         number = _number(raw)
         if number is None:
             return
-        kind = "active_power" if match.group(2).lower() == "activepower" else "cumulative_generation"
+        kind = "active_power" if re.sub(r"[^a-z]", "", match.group(2).lower()) == "activepower" else "cumulative_generation"
         values[kind][inverter] = number
 
     visit(document)
@@ -294,23 +294,45 @@ class ScadaRealtimeReader:
                 timestamp = _document_time(document)
                 inverters: dict[int, dict] = {}
                 parameters = {}
-                raw_tags = {str(key): _serializable_value(raw) for key, raw in document.items()}
-                for key, raw in document.items():
-                    if key == "_id" or key in TIME_KEYS:
-                        continue
-                    match = DETAIL_TAG_RE.fullmatch(str(key))
-                    if match and 1 <= int(match.group(1)) <= 20:
-                        inverter = inverters.setdefault(int(match.group(1)), {"inverter": int(match.group(1))})
-                        value = _number(raw)
-                        kind = match.group(2).lower().replace(" ", "_").replace("-", "_")
-                        if kind == "activepower":
-                            inverter["activePowerMw"] = round(value * settings.scada_power_to_mw, 3) if value is not None else None
-                        elif kind == "daily_generation":
-                            inverter["dailyGenerationMWh"] = round(value * settings.scada_generation_to_mwh, 3) if value is not None else None
-                        else:
-                            inverter["cumulativeGenerationMWh"] = round(value * settings.scada_generation_to_mwh, 3) if value is not None else None
-                    elif isinstance(raw, (str, int, float, bool)) or raw is None:
-                        parameters[key] = raw
+                raw_tags = {}
+
+                def consume_detail(tag, raw):
+                    match = DETAIL_TAG_RE.fullmatch(str(tag).strip())
+                    if not match or not 1 <= int(match.group(1)) <= 20:
+                        return False
+                    inverter = inverters.setdefault(int(match.group(1)), {"inverter": int(match.group(1))})
+                    value = _number(raw)
+                    kind = re.sub(r"[^a-z]", "", match.group(2).lower())
+                    if kind == "activepower":
+                        inverter["activePowerRaw"] = value
+                        inverter["activePowerMw"] = round(value * settings.scada_power_to_mw, 3) if value is not None else None
+                    elif kind == "dailygeneration":
+                        inverter["dailyGenerationMWh"] = round(value * settings.scada_generation_to_mwh, 3) if value is not None else None
+                    else:
+                        inverter["cumulativeGenerationMWh"] = round(value * settings.scada_generation_to_mwh, 3) if value is not None else None
+                    return True
+
+                def visit_detail(node, path=""):
+                    if isinstance(node, dict):
+                        tag = next((node.get(key) for key in ("tag", "Tag", "tagName", "TagName", "name", "Name") if node.get(key)), None)
+                        if tag:
+                            raw = next((node.get(key) for key in ("value", "Value", "val", "reading") if key in node), None)
+                            consume_detail(tag, raw)
+                        for key, raw in node.items():
+                            if key == "_id" or key in TIME_KEYS:
+                                continue
+                            key_path = f"{path}.{key}" if path else str(key)
+                            raw_tags[key_path] = _serializable_value(raw)
+                            matched = consume_detail(key, raw)
+                            if isinstance(raw, (dict, list)):
+                                visit_detail(raw, key_path)
+                            elif not matched:
+                                parameters[key_path] = raw
+                    elif isinstance(node, list):
+                        for index, item in enumerate(node):
+                            visit_detail(item, f"{path}[{index}]")
+
+                visit_detail(document)
                 rows = [inverters[number] for number in sorted(inverters)]
                 totals = extract_plant_totals(document)
                 current_mw = sum(row.get("activePowerMw") or 0 for row in rows) if rows else (
@@ -325,7 +347,10 @@ class ScadaRealtimeReader:
                 return {
                     "collection": collection_name,
                     "name": _plant_name(collection_name),
-                    "available": bool(document) and current_mw is not None,
+                    # A collection is communicating when its latest document can
+                    # be read. Zero/missing active power is an operational value,
+                    # not a collection communication failure.
+                    "available": bool(document),
                     "timestamp": timestamp.isoformat() if timestamp else None,
                     "parameters": parameters,
                     "rawTags": raw_tags,
@@ -385,6 +410,15 @@ class ScadaRealtimeReader:
 
 def _plant_name(collection_name: str) -> str:
     name = re.sub(r"^B\d+[_ -]*", "", collection_name, flags=re.I)
+    normalized = re.sub(r"[^a-z0-9]", "", name.casefold())
+    aliases = {
+        "jagdeeshlive": "Jagadeesh",
+        "suyashlive": "Suyesh",
+        "soundcastinglive": "Sound Castings",
+        "veershalive": "Veeresha",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
     return re.sub(r"[_-]+", " ", name).strip() or collection_name
 
 

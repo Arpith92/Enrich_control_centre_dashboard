@@ -23,7 +23,9 @@ const readDailyGti = () => {
 }
 
 export const SimulationDataProvider = ({ children }) => {
-  const [plants, setPlants] = useState(() => generateInitialPlants())
+  const [plants, setPlants] = useState(() => generateInitialPlants().map((plant) => plant.name === 'Bhokar'
+    ? { ...plant, currentMw: 0, todayMwh: 0, telemetrySource: 'SCADA', communication: 'Pending' }
+    : plant))
   const [events, setEvents] = useState([])
   const [clock, setClock] = useState(dayjs())
   const [bootTime] = useState(dayjs().subtract(7, 'hour').subtract(22, 'minute'))
@@ -96,7 +98,7 @@ export const SimulationDataProvider = ({ children }) => {
       setClock(now)
       setPlants((prevPlants) => {
         const nextPlants = prevPlants.map((plant) => applyRealtime(
-          simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]),
+          plant.name === 'Bhokar' ? plant : simulatePlantTelemetry(plant, now, plant, weatherRef.current[plant.id]),
         ))
         const nextTrend = createTrendData(nextPlants, now)
         setHistory((prevHistory) => [...prevHistory.slice(-23), nextTrend])
@@ -133,7 +135,7 @@ export const SimulationDataProvider = ({ children }) => {
       if (!response.ok) throw new Error(`Bhokar SCADA API ${response.status}`)
       const payload = await response.json()
       setBhokarRealtime(payload)
-      const available = (payload.plants || []).filter((plant) => plant.available && !plant.stale)
+      const available = (payload.plants || []).filter((plant) => plant.available)
       setPlants((current) => current.map((plant) => plant.name !== 'Bhokar' ? plant : {
         ...plant,
         currentMw: Number(payload.currentMw) || 0,

@@ -5,7 +5,7 @@ import {
   LightModeOutlined, ConfirmationNumberOutlined, SettingsOutlined, Menu,
   Refresh, Fullscreen, DarkModeOutlined, Bolt, EnergySavingsLeaf, Co2,
   Speed, Wifi, AccountBalanceWallet, CloudOutlined,
-  Sync, SecurityOutlined, Storage, AccountCircle,
+  SecurityOutlined, Storage, AccountCircle,
 } from '@mui/icons-material'
 import IndiaMap from './components/IndiaMap'
 import SldcStatusCard from './components/SldcStatusCard'
@@ -66,14 +66,13 @@ const Nav = ({ collapsed, onToggle, active, onSelect }) => {
   </aside>
 }
 
-const Header = ({ clock }) => <header className="ops-header">
+const Header = ({ clock, lightTheme, onToggleTheme }) => <header className="ops-header">
   <div className="brand"><img className="brand-logo" src={enrichLogo} alt="Enrich - The Solar People" /><div><b>ENRICH SOLAR OPERATIONS</b><span>SOLAR PLANT MONITORING DASHBOARD</span></div></div>
   <div className="head-tools">
     <div className="header-user"><AccountCircle /><span>Hi, <b>Arpith Shetty</b></span></div>
     <div className="clock">{clock.format('hh:mm:ss A')}<span>{clock.format('DD MMM YYYY, ddd')}</span></div>
     <button onClick={() => window.dispatchEvent(new Event('dashboard-refresh'))}><Refresh /><span>Refresh</span></button><button onClick={() => document.documentElement.requestFullscreen?.()}><Fullscreen /><span>Fullscreen</span></button>
-    <button><DarkModeOutlined /><span>Theme</span></button>
-    <div className="connected"><QueryStats /><b>SCADA CONNECTED</b><span>All Systems Normal</span></div>
+    <button onClick={onToggleTheme} aria-pressed={lightTheme} title={`Switch to ${lightTheme ? 'dark' : 'white'} theme`}>{lightTheme ? <DarkModeOutlined /> : <LightModeOutlined />}<span>Theme</span></button>
   </div>
 </header>
 
@@ -107,25 +106,32 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
     setActive(next)
     window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: next }))
   }
-  const totalCapacity = customers.reduce((sum, customer) => sum + customer.dc, 0)
-  const totalGeneration = customers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
+  const thirdPartyCustomers = customers.filter((customer) => !customer.commonInfra)
+  const commonInfraCustomers = customers.filter((customer) => customer.commonInfra)
   const enrichCapacity = plants.reduce((sum, plant) => {
     const mappedDc = (plantMapping[plant.name] || []).reduce((total, mappedPlant) => total + mappedPlant.dc, 0)
     return sum + (mappedDc || plant.capacity * 1.2)
   }, 0)
   const enrichGeneration = plants.reduce((sum, plant) => sum + plant.currentMw, 0)
-  const showEnrich = scope?.type !== 'portfolio-third-party'
-  const showThirdParty = scope?.type !== 'portfolio-enrich'
-  const displayedCapacity = showEnrich && showThirdParty ? enrichCapacity + totalCapacity : showEnrich ? enrichCapacity : totalCapacity
-  const displayedGeneration = showEnrich && showThirdParty ? enrichGeneration + totalGeneration : showEnrich ? enrichGeneration : totalGeneration
-  const totalLabel = showEnrich && showThirdParty ? 'ALL SITES' : showEnrich ? 'ENRICH SITES' : 'THIRD-PARTY SITES'
+  const showEnrich = !['portfolio-third-party', 'portfolio-common-infra'].includes(scope?.type)
+  const showThirdParty = !['portfolio-enrich', 'portfolio-common-infra'].includes(scope?.type)
+  const showCommonInfra = !['portfolio-enrich', 'portfolio-third-party'].includes(scope?.type)
+  const visibleCustomers = [
+    ...(showThirdParty ? thirdPartyCustomers : []),
+    ...(showCommonInfra ? commonInfraCustomers : []),
+  ]
+  const displayedCapacity = (showEnrich ? enrichCapacity : 0) + visibleCustomers.reduce((sum, customer) => sum + customer.dc, 0)
+  const displayedGeneration = (showEnrich ? enrichGeneration : 0) + visibleCustomers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
+  const totalLabel = scope?.type === 'portfolio-enrich' ? 'ENRICH SITES'
+    : scope?.type === 'portfolio-third-party' ? 'THIRD-PARTY SITES'
+      : scope?.type === 'portfolio-common-infra' ? 'COMMON INFRA' : 'ALL SITES'
   return <Panel title="ALL COMMISSIONED SITES" className="third-party-portfolio">
     <div className="portfolio-head"><span>Portfolio / Site</span><span>DC Capacity</span><span>Generation</span></div>
     <div className="portfolio-rows portfolio-site-list">
       {showEnrich && [...plants].sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name)).map((plant) => {
         const mappedPlants = plantMapping[plant.name] || []
         const issueCount = plant.name === 'Bhokar' && bhokarRealtime?.plants
-          ? bhokarRealtime.plants.filter((item) => !item.available || item.stale).length
+          ? bhokarRealtime.plants.filter((item) => !item.available).length
           : mappedPlants.filter((item) => item.communicationIssue).length
         const failed = (plant.name !== 'Bhokar' && (plant.communication === 'Failed' || plant.communicationIssue)) || (mappedPlants.length > 0 && issueCount === mappedPlants.length)
         const partial = issueCount > 0 && !failed
@@ -133,11 +139,11 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
         const dcCapacity = mappedPlants.reduce((sum, mappedPlant) => sum + mappedPlant.dc, 0) || plant.capacity * 1.2
         return <button className={`portfolio-site enrich-site-row ${failed ? 'site-offline' : partial ? 'site-partial' : 'site-online'} ${selected ? 'active' : ''}`} title={failed ? 'All plants have communication issues' : partial ? `${issueCount} of ${mappedPlants.length} plants has a communication issue` : `${mappedPlants.length || 1} plant(s) · all communication healthy`} key={plant.id} onClick={() => onSelectScope(selected ? null : { type: 'enrich', id: plant.id, name: plant.name })}><span><b>{plant.name}</b></span><strong>{dcCapacity.toFixed(2)} MWp</strong><strong>{plant.currentMw.toFixed(2)} MW</strong></button>
       })}
-      {showThirdParty && [...customers].sort((a, b) => b.ac - a.ac || a.name.localeCompare(b.name)).map((customer) => <div className={`portfolio-customer-section ${active === customer.id ? 'active' : ''}`} key={customer.id}>
-        <button className={`portfolio-site customer-site-row site-third-party comm-${customer.communicationStatus} ${scope?.customerId === customer.id || scope?.id === customer.id ? 'active' : ''}`} title={customer.communicationIssueCount ? `${customer.communicationIssueCount} of ${customer.plants.length} plants have communication issues` : 'All plants communicating'} onClick={() => { const isSelected = scope?.customerId === customer.id || scope?.id === customer.id; select(customer.id); onSelectScope(isSelected ? null : { type: 'customer', id: customer.id, customerId: customer.id, name: customer.name, customer }) }}><span><b>{customer.name}</b></span><strong>{customer.dc.toFixed(2)} MWp</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong></button>
+      {[...visibleCustomers].sort((a, b) => Number(a.commonInfra) - Number(b.commonInfra) || b.dc - a.dc || a.name.localeCompare(b.name)).map((customer) => <div className={`portfolio-customer-section ${active === customer.id ? 'active' : ''}`} key={customer.id}>
+        <button className={`portfolio-site customer-site-row ${customer.commonInfra ? 'site-common-infra' : 'site-third-party'} comm-${customer.communicationStatus} ${scope?.customerId === customer.id || scope?.id === customer.id ? 'active' : ''}`} title={customer.commonInfra ? `${customer.plants.length} common-infrastructure plants · no real-time telemetry` : customer.communicationIssueCount ? `${customer.communicationIssueCount} of ${customer.plants.length} plants have communication issues` : 'All plants communicating'} onClick={() => { const isSelected = scope?.customerId === customer.id || scope?.id === customer.id; select(customer.id); onSelectScope(isSelected ? null : { type: 'customer', id: customer.id, customerId: customer.id, name: customer.name, customer }) }}><span><b>{customer.name}</b></span><strong>{customer.dc.toFixed(2)} MWp</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong></button>
       </div>)}
     </div>
-    <button className={`portfolio-total ${!scope ? 'active' : ''}`} onClick={() => { setActive(null); window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: null })); onSelectScope(null) }} title="Clear filter and show all sites"><span><b>{totalLabel}</b>{scope && <small>Click to clear filter</small>}</span><strong>{displayedCapacity.toFixed(2)} MWp</strong><strong>{displayedGeneration.toFixed(2)} MW</strong></button>
+    <button className={`portfolio-total ${!scope ? 'active' : ''}`} onClick={() => { setActive(null); window.dispatchEvent(new CustomEvent('third-party-customer-select', { detail: null })); onSelectScope(null); window.dispatchEvent(new Event('map-show-overview')) }} title="Clear every filter and show the complete installed base"><span><b>{totalLabel}</b>{scope && <small>Click to clear filter</small>}</span><strong>{displayedCapacity.toFixed(2)} MWp</strong><strong>{displayedGeneration.toFixed(2)} MW</strong></button>
   </Panel>
 }
 
@@ -168,7 +174,7 @@ const RightRail = ({ alarms, events, plants, siteWeather, weatherUpdatedAt, onOp
     {events.slice(0, 6).map((event) => <div className={`event-row ${event.severity}`} key={event.id}><i/><span>{event.time}</span><div><b>{event.plant}</b><small>{event.detail}</small></div></div>)}
   </Panel>
   <Panel title="SITE WEATHER · LIVE" className="weather-box site-weather">
-    <span className="weather-source">LIVE · 60s SYNC · {weatherUpdatedAt ? weatherUpdatedAt.format('HH:mm:ss') : 'CONNECTING…'}</span>
+    <span className="weather-source">{weatherUpdatedAt ? `LIVE · ${weatherUpdatedAt.format('HH:mm:ss')}` : 'CONNECTING…'}</span>
     <div className="site-weather-list">
       {plants.map((plant) => {
         const w = siteWeather[plant.id]
@@ -201,17 +207,23 @@ const Bottom = ({ plants }) => <div className="bottom-grid">
   <Panel title="TOP 5 PLANTS BY CURRENT GENERATION"><div className="rank">{[...plants].sort((a,b)=>b.currentMw-a.currentMw).slice(0,5).map(p=><span key={p.id}>{p.name}<i style={{width:`${Math.min(100,p.currentMw)}%`}}/><b>{p.currentMw.toFixed(2)}</b></span>)}</div></Panel>
 </div>
 
-const Footer = () => <footer className="status-footer">{[[SecurityOutlined,'SCADA STATUS','ONLINE'],[CloudOutlined,'API STATUS','ONLINE'],[Wifi,'NETWORK HEALTH','GOOD'],[Storage,'DATABASE','HEALTHY'],[Speed,'SERVER LOAD','24%'],[CloudOutlined,'CLOUD BACKUP','OK'],[Sync,'NEXT DATA SYNC','00:00:01']].map(([Icon,a,b])=><div key={a}><Icon/><span>{a}<b>{b}</b></span></div>)}</footer>
+const Footer = () => <footer className="status-footer">{[[SecurityOutlined,'SCADA STATUS','ONLINE'],[CloudOutlined,'API STATUS','ONLINE'],[Wifi,'NETWORK HEALTH','GOOD'],[Storage,'DATABASE','HEALTHY'],[Speed,'SERVER LOAD','24%'],[CloudOutlined,'CLOUD BACKUP','OK']].map(([Icon,a,b])=><div key={a}><Icon/><span>{a}<b>{b}</b></span></div>)}</footer>
 
 const DashboardView = () => {
   const { plants, metrics, clock, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites, bhokarRealtime } = useSimulationData()
   const [navCollapsed, setNavCollapsed] = useState(false)
+  const [lightTheme, setLightTheme] = useState(() => window.localStorage.getItem('enrich-dashboard-theme') === 'light')
   const [activeView, setActiveView] = useState(viewFromHash)
   const [scope, setScope] = useState(null)
   const [selectedBhokarCollection, setSelectedBhokarCollection] = useState(null)
   const [plantMapping, setPlantMapping] = useState(createImmediatePlantMapping)
   const sldc = useSldcData()
-  const liveFeed = useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt })
+  const liveFeed = useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt, bhokarRealtime })
+  const toggleTheme = () => setLightTheme((current) => {
+    const next = !current
+    window.localStorage.setItem('enrich-dashboard-theme', next ? 'light' : 'dark')
+    return next
+  })
   useEffect(() => {
     const loadMapping = async () => {
       try {
@@ -253,7 +265,7 @@ const DashboardView = () => {
   const selectedEnrichPlant = scope?.type === 'enrich' ? plants.find((plant) => plant.id === scope.id) : scope?.type === 'enrich-plant' ? plants.find((plant) => plant.id === scope.siteId) : null
   const visiblePlants = selectedEnrichPlant
     ? [selectedEnrichPlant]
-    : scope?.type === 'customer' || scope?.type === 'third-party-plant' || scope?.type === 'portfolio-third-party' ? [] : plants
+    : scope?.type === 'customer' || scope?.type === 'third-party-plant' || scope?.type === 'portfolio-third-party' || scope?.type === 'portfolio-common-infra' ? [] : plants
   const scopedThirdPartyWeather = scope?.type === 'third-party-plant'
     ? [{ ...scope.plant, name: scope.plant.site, state: scope.customer.name, thirdParty: true }]
     : scope?.type === 'customer'
@@ -263,39 +275,48 @@ const DashboardView = () => {
     ? [selectedEnrichPlant]
     : scopedThirdPartyWeather.length ? scopedThirdPartyWeather
       : scope?.type === 'portfolio-enrich' ? plants
-        : scope?.type === 'portfolio-third-party' ? thirdPartyWeatherSites
+        : scope?.type === 'portfolio-third-party' ? thirdPartyWeatherSites.filter((plant) => !plant.commonInfra)
+          : scope?.type === 'portfolio-common-infra' ? thirdPartyWeatherSites.filter((plant) => plant.commonInfra)
           : [...plants, ...thirdPartyWeatherSites]
   const mappedSiteCapacity = selectedEnrichPlant ? (plantMapping[selectedEnrichPlant.name] || []).reduce((sum, item) => sum + item.ac, 0) : 0
   const portfolioThirdParty = simulateThirdPartyCustomers(new Date(), siteWeather)
-  const portfolioThirdPartyCapacity = portfolioThirdParty.reduce((sum, customer) => sum + customer.ac, 0)
+  const portfolioThirdPartyCapacity = portfolioThirdParty.reduce((sum, customer) => sum + customer.dc, 0)
   const portfolioThirdPartyGeneration = portfolioThirdParty.reduce((sum, customer) => sum + customer.simulatedMw, 0)
   const portfolioThirdPartyToday = portfolioThirdParty.reduce((sum, customer) => sum + customer.todayMwh, 0)
   const isEnrichPortfolio = scope?.type === 'portfolio-enrich'
   const scopedThirdPartyPlants = scope?.type === 'third-party-plant'
     ? [scope.plant]
     : scope?.type === 'customer' ? scope.customer.plants
-      : scope?.type === 'portfolio-third-party' ? portfolioThirdParty.flatMap((customer) => customer.plants)
+      : scope?.type === 'portfolio-third-party' ? portfolioThirdParty.filter((customer) => !customer.commonInfra).flatMap((customer) => customer.plants)
+        : scope?.type === 'portfolio-common-infra' ? portfolioThirdParty.filter((customer) => customer.commonInfra).flatMap((customer) => customer.plants)
         : []
   const isThirdPartyScope = scopedThirdPartyPlants.length > 0
-  const scopedThirdPartyPr = isThirdPartyScope
+  const scopedThirdPartyHasNoTelemetry = scopedThirdPartyPlants.length > 0 && scopedThirdPartyPlants.every((plant) => plant.noTelemetry)
+  const scopedThirdPartyPr = scopedThirdPartyHasNoTelemetry ? 0 : isThirdPartyScope
     ? (scopedThirdPartyPlants.reduce((sum, plant) => sum + plant.ac * (plant.efficiency || .8), 0) / scopedThirdPartyPlants.reduce((sum, plant) => sum + plant.ac, 0)) * 100
     : null
-  const scopedThirdPartyAvailability = isThirdPartyScope
+  const scopedThirdPartyAvailability = scopedThirdPartyHasNoTelemetry ? 0 : isThirdPartyScope
     ? (scopedThirdPartyPlants.filter((plant) => !plant.communicationIssue).length / scopedThirdPartyPlants.length) * 100
     : null
-  const scopeCapacity = scope?.mappedPlant?.ac ?? selectedEnrichPlant?.capacity ?? scope?.plant?.ac ?? scope?.customer?.ac ?? (scope?.type === 'portfolio-third-party' ? portfolioThirdPartyCapacity : isEnrichPortfolio ? metrics.totalCapacity : undefined)
-  const scopeGeneration = scope?.mappedPlant && selectedEnrichPlant ? selectedEnrichPlant.currentMw * (scope.mappedPlant.ac / (mappedSiteCapacity || selectedEnrichPlant.capacity)) : selectedEnrichPlant?.currentMw ?? scope?.plant?.simulatedMw ?? scope?.customer?.simulatedMw ?? (scope?.type === 'portfolio-third-party' ? portfolioThirdPartyGeneration : isEnrichPortfolio ? metrics.currentGeneration : undefined)
+  const scopedPortfolioCustomers = scope?.type === 'portfolio-common-infra'
+    ? portfolioThirdParty.filter((customer) => customer.commonInfra)
+    : scope?.type === 'portfolio-third-party' ? portfolioThirdParty.filter((customer) => !customer.commonInfra) : []
+  const scopedPortfolioCapacity = scopedPortfolioCustomers.reduce((sum, customer) => sum + customer.dc, 0)
+  const scopedPortfolioGeneration = scopedPortfolioCustomers.reduce((sum, customer) => sum + customer.simulatedMw, 0)
+  const scopedPortfolioToday = scopedPortfolioCustomers.reduce((sum, customer) => sum + customer.todayMwh, 0)
+  const scopeCapacity = scope?.mappedPlant?.dc ?? selectedEnrichPlant?.capacity ?? scope?.plant?.dc ?? scope?.customer?.dc ?? (scopedPortfolioCustomers.length ? scopedPortfolioCapacity : isEnrichPortfolio ? metrics.totalCapacity : undefined)
+  const scopeGeneration = scope?.mappedPlant && selectedEnrichPlant ? selectedEnrichPlant.currentMw * (scope.mappedPlant.ac / (mappedSiteCapacity || selectedEnrichPlant.capacity)) : selectedEnrichPlant?.currentMw ?? scope?.plant?.simulatedMw ?? scope?.customer?.simulatedMw ?? (scopedPortfolioCustomers.length ? scopedPortfolioGeneration : isEnrichPortfolio ? metrics.currentGeneration : undefined)
   const scopeTodayGeneration = scope?.mappedPlant && selectedEnrichPlant
     ? selectedEnrichPlant.todayMwh * (scope.mappedPlant.ac / (mappedSiteCapacity || selectedEnrichPlant.capacity))
     : selectedEnrichPlant?.todayMwh ?? scope?.plant?.todayMwh ?? scope?.customer?.todayMwh
-      ?? (scope?.type === 'portfolio-third-party' ? portfolioThirdPartyToday : isEnrichPortfolio ? metrics.todayGeneration : undefined)
+      ?? (scopedPortfolioCustomers.length ? scopedPortfolioToday : isEnrichPortfolio ? metrics.todayGeneration : undefined)
   const fleetCapacity = plants.reduce((sum, plant) => sum + plant.capacity, 0) || 1
   const scale = scopeCapacity ? scopeCapacity / fleetCapacity : 1
   const allCapacity = metrics.totalCapacity + portfolioThirdPartyCapacity
   const allCurrentGeneration = metrics.currentGeneration + portfolioThirdPartyGeneration
   const allTodayGeneration = metrics.todayGeneration + portfolioThirdPartyToday
   const allThirdPartyPlants = portfolioThirdParty.flatMap((customer) => customer.plants)
-  const allOnlinePlants = metrics.onlinePlants + allThirdPartyPlants.filter((plant) => !plant.communicationIssue).length
+  const allOnlinePlants = metrics.onlinePlants + allThirdPartyPlants.filter((plant) => !plant.noTelemetry && !plant.communicationIssue).length
   const allPlantCount = metrics.totalPlants + allThirdPartyPlants.length
   const allThirdPartyPr = portfolioThirdPartyCapacity
     ? (allThirdPartyPlants.reduce((sum, plant) => sum + plant.ac * (plant.efficiency || .8), 0) / portfolioThirdPartyCapacity) * 100
@@ -318,8 +339,8 @@ const DashboardView = () => {
   const scopedMetrics = scope ? {
     ...metrics,
     totalPlants: isThirdPartyScope ? scopedThirdPartyPlants.length : metrics.totalPlants,
-    onlinePlants: isThirdPartyScope ? scopedThirdPartyPlants.filter((plant) => !plant.communicationIssue).length : metrics.onlinePlants,
-    offlinePlants: isThirdPartyScope ? scopedThirdPartyPlants.filter((plant) => plant.communicationIssue).length : metrics.offlinePlants,
+    onlinePlants: isThirdPartyScope ? scopedThirdPartyPlants.filter((plant) => !plant.noTelemetry && !plant.communicationIssue).length : metrics.onlinePlants,
+    offlinePlants: isThirdPartyScope ? scopedThirdPartyPlants.filter((plant) => !plant.noTelemetry && plant.communicationIssue).length : metrics.offlinePlants,
     totalCapacity: scopeCapacity || metrics.totalCapacity,
     currentGeneration: scopeGeneration || 0,
     todayGeneration: scopeTodayGeneration ?? metrics.todayGeneration * scale,
@@ -349,9 +370,9 @@ const DashboardView = () => {
     else if (view === 'Settings') window.location.hash = 'settings'
     else if (window.location.hash) history.replaceState(null, '', window.location.pathname)
   }
-  return <Box className={`ops-app ${navCollapsed ? 'nav-collapsed' : ''}`}>
+  return <Box className={`ops-app ${navCollapsed ? 'nav-collapsed' : ''} ${lightTheme ? 'light-theme' : ''}`}>
     <Nav collapsed={navCollapsed} onToggle={() => setNavCollapsed((value) => !value)} active={activeView === 'Operations' ? 'Alarms' : activeView} onSelect={selectView} />
-    <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' || activeView === 'Bhokar' || activeView === 'Settings' ? 'sldc-main' : ''}><Header clock={clock}/>{activeView === 'Bhokar'
+    <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' || activeView === 'Bhokar' || activeView === 'Settings' ? 'sldc-main' : ''}><Header clock={clock} lightTheme={lightTheme} onToggleTheme={toggleTheme}/>{activeView === 'Bhokar'
       ? <BhokarDashboard initialCollection={selectedBhokarCollection} onBack={() => selectView('Dashboard')} />
       : activeView === 'Settings'
       ? <Suspense fallback={<div className="weather-loading">Loading site settings…</div>}><SiteSettings onBack={() => selectView('Dashboard')} /></Suspense>
@@ -360,7 +381,7 @@ const DashboardView = () => {
       : activeView === 'Operations' ? <OperationsLog plants={plants} onBack={() => selectView('Dashboard')} />
       : activeView === 'SLDC' || activeView === 'Reports'
       ? <SldcDashboard data={sldc} onBack={() => selectView('Dashboard')} openReports={activeView === 'Reports'} />
-      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime} onOpenBhokarPlant={(mappedPlant) => { const collection = bhokarCollectionForPlant(mappedPlant.plantName); setSelectedBhokarCollection(collection || null); setActiveView('Bhokar'); window.location.hash = collection ? `bhokar/${collection}` : 'bhokar' }}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
+      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime} lightTheme={lightTheme} onOpenBhokarPlant={(mappedPlant) => { const collection = bhokarCollectionForPlant(mappedPlant.plantName); setSelectedBhokarCollection(collection || null); setActiveView('Bhokar'); window.location.hash = collection ? `bhokar/${collection}` : 'bhokar' }}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
     </main>
   </Box>
 }

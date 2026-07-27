@@ -65,7 +65,7 @@ export default function OperationsLog({ onBack, plants }) {
 
   return <div className="operations-log-page">
     <div className="operations-log-title"><button onClick={onBack}><ArrowBack /> Control Centre</button><div><span>LIVE OPERATIONS HISTORY</span><h1>Alarms & Events Log</h1><p>Persistent MH SLDC communication and live site-weather monitoring records</p></div><button onClick={load}><Refresh className={loading ? 'spin' : ''} /> Refresh</button></div>
-    <div className="operations-log-kpis"><article><span>Total records</span><b>{rows.length}</b></article><article><span>Alarm records</span><b>{alarmCount}</b></article><article><span>High / Critical</span><b className={highCount ? 'danger' : ''}>{highCount}</b></article><article><span>Auto refresh</span><b>10 <small>sec</small></b></article></div>
+    <div className="operations-log-kpis"><article><span>Total records</span><b>{rows.length}</b></article><article><span>Alarm records</span><b>{alarmCount}</b></article><article><span>High / Critical</span><b className={highCount ? 'danger' : ''}>{highCount}</b></article></div>
     <section className="operations-log-panel">
       <form className="operations-log-filters" onSubmit={apply}>
         <label>From<input type="date" value={fromDate} max={today} onChange={(event) => setFromDate(event.target.value)} /></label>

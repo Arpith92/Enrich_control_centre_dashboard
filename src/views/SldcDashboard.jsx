@@ -36,7 +36,7 @@ export default function SldcDashboard({ data, onBack, openReports = false }) {
     </div>
 
     <section className="sldc-fleet-panel">
-      <div className="sldc-section-heading"><div><span>FLEET STATUS</span><h2>Seven-site telemetry</h2></div><em>{lastSync ? `Dashboard sync ${lastSync.toLocaleTimeString('en-IN')}` : 'Connecting…'} · Auto-refresh 5 seconds</em></div>
+      <div className="sldc-section-heading"><div><span>FLEET STATUS</span><h2>Seven-site telemetry</h2></div><em>{lastSync ? `Updated ${lastSync.toLocaleTimeString('en-IN')}` : 'Connecting…'}</em></div>
       <div className="sldc-station-grid">
         {sites.map((site) => {
           const online = isCommunicating(site)

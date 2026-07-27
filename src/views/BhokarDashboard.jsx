@@ -39,7 +39,7 @@ export default function BhokarDashboard({ onBack, initialCollection = null }) {
   return <div className="bhokar-page">
     <div className="bhokar-toolbar">
       <button onClick={onBack}><ArrowBack /> Dashboard</button>
-      <div><h1>BHOKAR · LIVE SCADA</h1><span>Nine customer plants · latest documents from *_LIVE collections · 1-second refresh</span></div>
+      <div><h1>BHOKAR · LIVE SCADA</h1><span>Nine customer plants · latest documents from *_LIVE collections</span></div>
       <button onClick={refresh}><Refresh /> Refresh</button>
     </div>
 
@@ -59,7 +59,7 @@ export default function BhokarDashboard({ onBack, initialCollection = null }) {
     {loading && !data ? <div className="bhokar-loading">Loading real-time Bhokar parameters…</div> : <div className="bhokar-plants">
       {plants.map((plant) => <section className="bhokar-plant" key={plant.collection}>
         <header><div><i className={plant.available ? 'online' : ''}/><h2>{plant.name}</h2><small>{plant.collection}</small></div><time>{plant.timestamp ? new Date(plant.timestamp).toLocaleString('en-IN') : 'No timestamp'}</time></header>
-        {plant.stale && <div className="bhokar-stale">Cloud refresh delayed · showing the last successful one-minute average</div>}
+        {plant.stale && <div className="bhokar-stale">Cloud data delayed · showing the last successful values</div>}
         {!plant.available ? <div className="bhokar-unavailable">{plant.error || 'No current SCADA document available'}</div> : <>
           <div className="plant-summary">
             <span>Active power<b>{number(plant.currentMw)} MW</b></span>
@@ -74,7 +74,7 @@ export default function BhokarDashboard({ onBack, initialCollection = null }) {
             </tr>)}</tbody>
           </table></div>
           <details className="raw-scada-tags" open={selected !== 'all'}>
-            <summary>All real-time collection values · refreshed every second</summary>
+            <summary>All real-time collection values</summary>
             <div className="inverter-table-wrap"><table className="inverter-table raw-values-table">
               <thead><tr><th>Collection field</th><th>Latest value</th></tr></thead>
               <tbody>{Object.entries(plant.rawTags || {}).map(([tag, value]) => <tr key={tag}>
