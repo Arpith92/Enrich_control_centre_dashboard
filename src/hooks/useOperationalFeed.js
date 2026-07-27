@@ -49,7 +49,7 @@ const weatherAlarm = (plant, weather) => {
   return null
 }
 
-export default function useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt }) {
+export default function useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt, bhokarRealtime }) {
   const [transitionEvents, setTransitionEvents] = useState([])
   const previousAlarms = useRef(null)
 
@@ -105,6 +105,26 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
 
   const events = useMemo(() => {
     const sourceTime = sldc.latestTimestamp
+    const bhokarSite = plants.find((plant) => plant.name === 'Bhokar')
+    const bhokarGti = Number(siteWeather[bhokarSite?.id]?.gti_w_m2 ?? 0)
+    const bhokarInverterRows = (bhokarRealtime?.plants || []).flatMap((plant) => {
+      const plantGti = Number(plant.parameters?.GTI ?? plant.parameters?.gti ?? bhokarGti)
+      if (!(plantGti > 0)) return []
+      return (plant.inverters || [])
+        .filter((inverter) => {
+          const activePower = inverter.activePowerRaw ?? inverter.activePowerMw
+          return activePower != null && Number(activePower) === 0
+        })
+        .map((inverter) => ({
+          id: `bhokar-${plant.collection}-inv-${inverter.inverter}-zero`,
+          time: timeOf(plant.timestamp || bhokarRealtime?.timestamp),
+          timestamp: timestampOf(plant.timestamp || bhokarRealtime?.timestamp),
+          plant: plant.name,
+          detail: `${plant.name} Inverter_${inverter.inverter} comm issue`,
+          severity: 'critical',
+          source: 'Bhokar SCADA',
+        }))
+    })
     const weatherRows = plants.filter((plant) => siteWeather[plant.id]).map((plant) => {
       const weather = siteWeather[plant.id]
       const rain = Number(weather.precipitation_mm ?? weather.precipitation ?? weather.rain ?? 0)
@@ -136,8 +156,8 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
       plant: alarm.plant, detail: `${alarm.baseAlarm} active since ${timeOf(alarm.startedAt)} · ${durationLabel(alarm.durationMinutes)}`,
       severity: 'critical', source: 'MH SLDC', transient: true,
     }))
-    return [...transitionEvents, ...activeIncidents, ...summaries, ...weatherRows.slice(0, 2), ...sldcRows].slice(0, 6)
-  }, [transitionEvents, alarms, sldc, plants, siteWeather, weatherUpdatedAt])
+    return [...bhokarInverterRows, ...transitionEvents, ...activeIncidents, ...summaries, ...weatherRows.slice(0, 2), ...sldcRows].slice(0, 6)
+  }, [transitionEvents, alarms, sldc, plants, siteWeather, weatherUpdatedAt, bhokarRealtime])
 
   useEffect(() => {
     if (sldc.loading) return

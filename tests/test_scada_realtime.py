@@ -1,4 +1,4 @@
-from sldc.scada_realtime import _document_time, extract_inverter_values, extract_plant_totals
+from sldc.scada_realtime import _document_time, _plant_name, extract_inverter_values, extract_plant_totals
 
 
 def test_extracts_flat_and_nested_inverter_tags_up_to_twenty():
@@ -23,6 +23,21 @@ def test_extracts_tag_value_record_shape():
     result = extract_inverter_values(document)
     assert result["active_power"][2] == 300.25
     assert result["cumulative_generation"][2] == 12345
+
+
+def test_extracts_zero_padded_and_separated_power_tags():
+    result = extract_inverter_values({
+        "INV01_Active_Power": 120,
+        "payload": {"INV_02_Active-Power": {"value": 80}},
+    })
+    assert result["active_power"] == {1: 120, 2: 80}
+
+
+def test_bhokar_collection_names_match_plant_mapping():
+    assert _plant_name("B2_Jagdeesh_LIVE") == "Jagadeesh"
+    assert _plant_name("B5_SoundCasting_LIVE") == "Sound Castings"
+    assert _plant_name("B7_Suyash_LIVE") == "Suyesh"
+    assert _plant_name("B8_Veersha_LIVE") == "Veeresha"
 
 
 def test_timestamp_ist_is_interpreted_as_india_time():
