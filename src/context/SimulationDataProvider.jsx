@@ -53,15 +53,16 @@ export const SimulationDataProvider = ({ children }) => {
   }, [])
 
   const applyRealtime = useCallback((plant) => {
-    if (plant.name === 'Mundargi') {
+    if (plant.name === 'Mundargi' || plant.name === 'NLC Poolangal') {
       return {
         ...plant,
         currentMw: 0,
+        todayMwh: 0,
         telemetrySource: 'SCADA',
         communication: 'Failed',
         communicationIssue: true,
         inverterCount: 0,
-        lastUpdated: 'No data - SCADA server issue',
+        lastUpdated: `No data - ${plant.name === 'NLC Poolangal' ? 'server down' : 'SCADA server issue'}`,
       }
     }
     const live = scadaRef.current[plant.name.toLowerCase()]
