@@ -20,6 +20,9 @@ const bhokarLivePlant = (realtime, mappedPlant) => (realtime?.plants || []).find
   normalizedPlantName(plant.name) === normalizedPlantName(mappedPlant.plantName)
   || normalizedPlantName(plant.collection) === normalizedPlantName(mappedPlant.plantName))
 
+const OVERVIEW_CENTER = [21.7, 82.4]
+const OVERVIEW_ZOOM = 4
+
 const calloutPositions = {
   BEL1MW: [31.0, 68.8],
   PGCIL: [28.0, 68.8],
@@ -128,16 +131,21 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bho
       zoomControl: true, attributionControl: false, minZoom: 4, maxZoom: 9,
       zoomSnap: 0.25, maxBounds: [[4, 63], [40, 102]],
     })
-    map.fitBounds([[7.5, 68], [35.8, 97.5]], { padding: [26, 26] })
-    map.setZoom(map.getZoom() + 0.25, { animate: false })
+    const setOverview = (animate = false) => {
+      map.invalidateSize({ animate: false })
+      map.setView(OVERVIEW_CENTER, OVERVIEW_ZOOM, { animate })
+    }
+    setOverview()
+    // The dashboard columns finish sizing just after Leaflet mounts. Reapply the
+    // fixed camera then so every fresh load opens at exactly the same view.
+    const overviewFrame = window.requestAnimationFrame(() => setOverview())
     mapRef.current = map
     const showOverview = () => {
       setSelectedCustomerId(null)
       setSelectedEnrichId(null)
       lastAutoFitRef.current = 'overview'
       map.closePopup()
-      map.fitBounds([[7.5, 68], [35.8, 97.5]], { padding: [26, 26], animate: true })
-      map.setZoom(map.getZoom() + 0.25, { animate: false })
+      setOverview(true)
     }
     window.addEventListener('map-show-overview', showOverview)
     fetch('/india_states.min.geojson').then((response) => response.json()).then((data) => {
@@ -151,6 +159,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bho
       }).addTo(map)
     })
     return () => {
+      window.cancelAnimationFrame(overviewFrame)
       window.removeEventListener('map-show-overview', showOverview)
       map.remove()
       mapRef.current = null
@@ -265,7 +274,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bho
           // A communication issue belongs to the individual plant, so its marker is
           // fully offline (red). The parent site remains partial/amber while any of
           // its other plants are still communicating.
-          const mappedCommunicationIssue = mappedPlant.communicationIssue || site.name === 'Mundargi'
+          const mappedCommunicationIssue = mappedPlant.communicationIssue || site.name === 'Mundargi' || site.name === 'NLC Poolangal'
           const livePlant = site.name === 'Bhokar' ? bhokarLivePlant(bhokarRealtime, mappedPlant) : null
           const realtimeCommunicationIssue = site.name === 'Bhokar' && !livePlant?.available
           const plantCommunicationIssue = site.name === 'Bhokar' ? realtimeCommunicationIssue : mappedCommunicationIssue
@@ -273,7 +282,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bho
             ? Number(livePlant?.currentMw) || 0
             : plantCommunicationIssue ? 0 : site.currentMw * (mappedPlant.ac / operationalCapacity)
           const mappedStatus = plantCommunicationIssue ? { label: 'Offline', color: '#ff4d62' } : { label: 'Online', color: '#42ec61' }
-          const issueLabel = site.name === 'Mundargi' ? 'SCADA SERVER ISSUE' : 'COMMUNICATION DOWN'
+          const issueLabel = site.name === 'Mundargi' ? 'SCADA SERVER ISSUE' : site.name === 'NLC Poolangal' ? 'SERVER DOWN' : 'COMMUNICATION DOWN'
           const popup = `<div class="plant-popup"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><small>${site.name} · ${mappedPlant.state}</small><hr/><span>AC capacity <b>${mappedPlant.ac.toFixed(2)} MW</b></span><span>DC capacity <b>${mappedPlant.dc.toFixed(2)} MWp</b></span><span>Current generation <b>${generation.toFixed(2)} MW</b></span><span>Communication <b style="color:${mappedStatus.color}">${plantCommunicationIssue ? issueLabel : 'HEALTHY'}</b></span><span>Commissioned <b>${mappedPlant.commissioningDate || '—'}</b></span></div>`
           const marker = L.marker([lat, lon], { icon: plantIcon(mappedStatus, true), riseOnHover: true })
             .bindTooltip(`<div class="plant-hover"><b>${mappedPlant.plantName}</b><span>${mappedPlant.customerName}</span><hr/><span>Site <strong>${site.name}</strong></span><span>Generation <strong>${generation.toFixed(2)} MW</strong></span><span>Communication <strong style="color:${mappedStatus.color}">${plantCommunicationIssue ? issueLabel : 'HEALTHY'}</strong></span></div>`, { direction: 'top', className: 'plant-label' })
@@ -409,7 +418,7 @@ const IndiaMap = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bho
     const bhokarLive = site.name === 'Bhokar' ? bhokarRealtime?.plants || [] : []
     counts.total += mapped.length
     counts.reporting += mapped.filter((plant) => {
-      if (site.name === 'Mundargi') return false
+      if (site.name === 'Mundargi' || site.name === 'NLC Poolangal') return false
       if (site.name === 'Bhokar') return Boolean(bhokarLivePlant({ plants: bhokarLive }, plant)?.available)
       return !plant.communicationIssue && site.communication !== 'Failed' && !site.communicationIssue
     }).length
