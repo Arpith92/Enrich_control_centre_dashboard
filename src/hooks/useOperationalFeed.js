@@ -49,7 +49,35 @@ const weatherAlarm = (plant, weather) => {
   return null
 }
 
-export default function useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt, bhokarRealtime }) {
+const badCommunicationValue = (value) => {
+  if (value == null || value === '') return true
+  if (typeof value === 'boolean') return !value
+  if (typeof value === 'number') return value === 0
+  return /(?:lost|fail|fault|offline|disconnect|not\s*sync|invalid|low)/i.test(String(value))
+}
+
+const equipmentAlarms = (plant) => {
+  const detected = Object.entries({ ...plant.rawTags, ...plant.parameters }).flatMap(([key, value]) => {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (normalized.includes('plc') && normalized.includes('comm') && badCommunicationValue(value)) return [{ code: 'plc', alarm: 'PLC Communication Lost', severity: 'High' }]
+    if ((normalized.includes('ntp') || normalized.includes('timesync')) && badCommunicationValue(value)) return [{ code: 'ntp', alarm: 'NTP Time Sync Failed', severity: 'Medium' }]
+    if (normalized.includes('ups') && normalized.includes('battery') && (badCommunicationValue(value) || (Number.isFinite(Number(value)) && Number(value) < 20))) return [{ code: 'ups', alarm: 'UPS Battery Low', severity: 'Medium' }]
+    if (normalized.includes('meter') && normalized.includes('comm') && badCommunicationValue(value)) return [{ code: 'meter', alarm: 'Meter Communication Lost', severity: 'High' }]
+    return []
+  })
+  return [...new Map(detected.map((alarm) => [alarm.code, alarm])).values()]
+}
+
+const severityRank = { Critical: 0, High: 1, Medium: 2, Low: 3 }
+
+const transitionLabel = (alarm, restored = false) => {
+  if (alarm.id.startsWith('scada-com-')) return restored ? 'Site Communication Restored' : 'Site Communication Lost'
+  if (alarm.id.startsWith('scada-inverter-')) return restored ? 'Inverter Communication Restored' : 'Inverter Communication Lost'
+  if (alarm.id.startsWith('sldc-')) return restored ? 'SLDC Communication Restored' : 'SLDC Communication Lost'
+  return restored ? `${alarm.baseAlarm || alarm.alarm} cleared` : `${alarm.baseAlarm || alarm.alarm} · Incident started`
+}
+
+export default function useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt, siteRealtime = {} }) {
   const [transitionEvents, setTransitionEvents] = useState([])
   const previousAlarms = useRef(null)
 
@@ -62,15 +90,14 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
         const incident = sldc.activeIncidents?.find((row) => row.Plant === site.Plant)
         const startedAt = incident?.StartTime || site.Timestamp
         const durationMinutes = incident?.DurationMinutes ?? minutesSince(startedAt)
-        const baseAlarm = incident?.Issue || site.DashboardStatus || 'Communication failure'
-        active.push({ id: `sldc-com-${site.Plant}`, time: timeOf(startedAt), timestamp: timestampOf(startedAt), startedAt: timestampOf(startedAt), durationMinutes, plant: name, baseAlarm, alarm: `${baseAlarm} · Active ${durationLabel(durationMinutes)}`, severity: 'High', source: 'MH SLDC' })
+        active.push({ id: `sldc-com-${site.Plant}`, time: timeOf(startedAt), timestamp: timestampOf(startedAt), startedAt: timestampOf(startedAt), durationMinutes, plant: name, baseAlarm: 'SLDC Communication Lost', alarm: `SLDC Communication Lost · disconnected · Active ${durationLabel(durationMinutes)}`, severity: 'Critical', source: 'MH SLDC' })
       } else if (site.MW == null) {
-        active.push({ id: `sldc-data-${site.Plant}`, time: timeOf(site.Timestamp), timestamp: timestampOf(site.Timestamp), plant: name, alarm: 'Live MW unavailable', severity: 'High', source: 'MH SLDC' })
+        active.push({ id: `sldc-data-${site.Plant}`, time: timeOf(site.Timestamp), timestamp: timestampOf(site.Timestamp), plant: name, alarm: 'SLDC data not synchronized', severity: 'Critical', source: 'MH SLDC' })
       }
     })
 
-    if (sldc.latestTimestamp && minutesSince(sldc.latestTimestamp) > 30) {
-      active.push({ id: 'sldc-stale', time: timeOf(sldc.latestTimestamp), timestamp: timestampOf(sldc.latestTimestamp), plant: 'MH SLDC', alarm: 'Source update delayed', severity: 'High', source: 'MH SLDC' })
+    if (sldc.latestTimestamp && minutesSince(sldc.latestTimestamp) > 5) {
+      active.push({ id: 'sldc-stale', time: timeOf(sldc.latestTimestamp), timestamp: timestampOf(sldc.latestTimestamp), plant: 'MH SLDC', alarm: 'SLDC data not synchronized · update delayed >5 min', severity: 'Critical', source: 'MH SLDC' })
     }
 
     plants.forEach((plant) => {
@@ -79,11 +106,44 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
       if (condition) active.push({ id: `weather-${plant.id}-${condition.alarm}`, time: timeOf(weather.source_time || weatherUpdatedAt), timestamp: timestampOf(weather.source_time || weatherUpdatedAt), plant: plant.name, alarm: condition.alarm, severity: condition.severity, detail: condition.detail, source: 'Live weather' })
     })
 
-    if (weatherUpdatedAt && minutesSince(weatherUpdatedAt) > 3) {
-      active.push({ id: 'weather-stale', time: timeOf(weatherUpdatedAt), timestamp: timestampOf(weatherUpdatedAt), plant: 'Site Weather', alarm: 'Weather feed update delayed', severity: 'Medium', source: 'Open-Meteo' })
+    Object.entries(siteRealtime).forEach(([siteName, realtime]) => {
+      ;(realtime?.plants || []).forEach((plant) => {
+        const common = {
+          time: timeOf(plant.timestamp || realtime.timestamp), timestamp: timestampOf(plant.timestamp || realtime.timestamp),
+          plant: `${siteName} · ${plant.name}`, source: `${siteName} SCADA`,
+        }
+        if (plant.communicationIssue) active.push({
+          ...common, id: `scada-com-${siteName}-${plant.collection}`,
+          alarm: 'Site Communication Failure · No data >5 min', severity: 'Critical',
+        })
+        if (plant.dataStuck) active.push({
+          ...common, id: `scada-stuck-${siteName}-${plant.collection}`,
+          alarm: 'Real-time data stuck for 1 minute', severity: 'Medium',
+        })
+        ;(plant.inverterIssues || []).forEach((inverter) => active.push({
+          ...common, id: `scada-inverter-${siteName}-${plant.collection}-${inverter}`,
+          alarm: `${inverter} Communication Failure · No response >2 min`, severity: 'High',
+        }))
+        if (plant.zeroGenerationAlarm) active.push({
+          ...common, id: `scada-zero-${siteName}-${plant.collection}`,
+          alarm: 'Plant Offline · Entire plant generation = 0 during daylight', severity: 'Critical',
+        })
+        if (plant.lowGenerationAlarm) active.push({
+          ...common, id: `scada-low-${siteName}-${plant.collection}`,
+          alarm: `Low Generation · Below 80% expected (${Number(plant.currentMw || 0).toFixed(2)} / ${Number(plant.expectedMw || 0).toFixed(2)} MW)`, severity: 'Medium',
+        })
+        equipmentAlarms(plant).forEach((equipment) => active.push({
+          ...common, id: `scada-${equipment.code}-${siteName}-${plant.collection}`,
+          alarm: equipment.alarm, severity: equipment.severity,
+        }))
+      })
+    })
+
+    if (weatherUpdatedAt && minutesSince(weatherUpdatedAt) > 5) {
+      active.push({ id: 'weather-stale', time: timeOf(weatherUpdatedAt), timestamp: timestampOf(weatherUpdatedAt), plant: 'Site Weather', alarm: 'Weather Station Offline · No update >5 min', severity: 'High', source: 'Open-Meteo' })
     }
-    return active.sort((a, b) => (a.severity === 'High' ? -1 : 1) - (b.severity === 'High' ? -1 : 1))
-  }, [sldc, plants, siteWeather, weatherUpdatedAt])
+    return active.sort((a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9))
+  }, [sldc, plants, siteWeather, weatherUpdatedAt, siteRealtime])
 
   useEffect(() => {
     if (sldc.loading) return
@@ -91,12 +151,12 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
     if (previousAlarms.current) {
       const eventDate = new Date()
       const timestamp = timestampOf(eventDate)
-      const raised = alarms.filter((alarm) => !previousAlarms.current.has(alarm.id)).map((alarm) => ({ id: `raised-${alarm.id}-${Date.now()}`, time: timeOf(alarm.startedAt || timestamp), timestamp: alarm.startedAt || timestamp, plant: alarm.plant, detail: `${alarm.baseAlarm || alarm.alarm} · Incident started`, severity: 'critical', source: alarm.source }))
+      const raised = alarms.filter((alarm) => !previousAlarms.current.has(alarm.id)).map((alarm) => ({ id: `raised-${alarm.id}-${Date.now()}`, time: timeOf(alarm.startedAt || timestamp), timestamp: alarm.startedAt || timestamp, plant: alarm.plant, detail: transitionLabel(alarm), severity: alarm.severity === 'Medium' ? 'warning' : 'critical', source: alarm.source }))
       const cleared = [...previousAlarms.current.values()].filter((alarm) => !nextAlarms.has(alarm.id)).map((alarm) => {
         const site = sldc.sites.find((row) => (SLDC_DISPLAY_NAMES[row.Plant] || row.Plant) === alarm.plant)
         const restoredAt = timestampOf(site?.Timestamp) || timestamp
         const duration = alarm.startedAt ? minutesBetween(alarm.startedAt, restoredAt) : 0
-        return { id: `clear-${alarm.id}-${Date.now()}`, time: timeOf(restoredAt), timestamp: restoredAt, plant: alarm.plant, detail: alarm.startedAt ? `${alarm.baseAlarm || alarm.alarm} restored · ${timeOf(alarm.startedAt)}–${timeOf(restoredAt)} · Downtime ${durationLabel(duration)}` : `${alarm.alarm} cleared`, severity: 'normal', source: alarm.source }
+        return { id: `clear-${alarm.id}-${Date.now()}`, time: timeOf(restoredAt), timestamp: restoredAt, plant: alarm.plant, detail: alarm.startedAt ? `${transitionLabel(alarm, true)} · ${timeOf(alarm.startedAt)}–${timeOf(restoredAt)} · Downtime ${durationLabel(duration)}` : transitionLabel(alarm, true), severity: 'normal', source: alarm.source }
       })
       if (raised.length || cleared.length) setTransitionEvents((previous) => [...raised, ...cleared, ...previous].slice(0, 10))
     }
@@ -105,25 +165,26 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
 
   const events = useMemo(() => {
     const sourceTime = sldc.latestTimestamp
-    const bhokarSite = plants.find((plant) => plant.name === 'Bhokar')
-    const bhokarGti = Number(siteWeather[bhokarSite?.id]?.gti_w_m2 ?? 0)
-    const bhokarInverterRows = (bhokarRealtime?.plants || []).flatMap((plant) => {
-      const plantGti = Number(plant.parameters?.GTI ?? plant.parameters?.gti ?? bhokarGti)
-      if (!(plantGti > 0)) return []
-      return (plant.inverters || [])
-        .filter((inverter) => {
-          const activePower = inverter.activePowerRaw ?? inverter.activePowerMw
-          return activePower != null && Number(activePower) === 0
-        })
-        .map((inverter) => ({
-          id: `bhokar-${plant.collection}-inv-${inverter.inverter}-zero`,
-          time: timeOf(plant.timestamp || bhokarRealtime?.timestamp),
-          timestamp: timestampOf(plant.timestamp || bhokarRealtime?.timestamp),
-          plant: plant.name,
-          detail: `${plant.name} Inverter_${inverter.inverter} comm issue`,
-          severity: 'critical',
-          source: 'Bhokar SCADA',
+    const scadaInverterRows = Object.entries(siteRealtime).flatMap(([siteName, realtime]) => {
+      const site = plants.find((plant) => plant.name === siteName)
+      const siteGti = Number(siteWeather[site?.id]?.gti_w_m2 ?? 0)
+      return (realtime?.plants || []).flatMap((plant) => {
+        const plantGti = Number(plant.gti ?? plant.parameters?.GTI ?? plant.parameters?.gti ?? siteGti)
+        const inverterRows = (plant.inverterIssues || []).map((inverter) => ({
+          id: `${siteName}-${plant.collection}-inv-${inverter}-issue`,
+          time: timeOf(plant.timestamp || realtime?.timestamp),
+          timestamp: timestampOf(plant.timestamp || realtime?.timestamp),
+          plant: `${siteName} · ${plant.name}`,
+          detail: `${plant.name} · ${inverter} inactive / no communication · GTI ${plantGti.toFixed(0)} W/m²`,
+          severity: 'critical', source: `${siteName} SCADA`,
         }))
+        const statusRows = [
+          ...(plant.inactiveInverters || []).filter((inverter) => !(plant.inverterIssues || []).includes(inverter)).map((inverter) => ({ id: `${siteName}-${plant.collection}-inv-${inverter}-inactive`, detail: `${plant.name} · ${inverter} currently inactive / no response`, severity: 'warning' })),
+          ...(plant.dataStuck ? [{ id: `${siteName}-${plant.collection}-stuck`, detail: `${plant.name} real-time data stuck for 1 minute`, severity: 'warning' }] : []),
+          ...(plant.communicationIssue ? [{ id: `${siteName}-${plant.collection}-communication`, detail: `${plant.name} ${plant.statusMessage}`, severity: 'critical' }] : []),
+        ].map((row) => ({ ...row, time: timeOf(plant.timestamp || realtime?.timestamp), timestamp: timestampOf(plant.timestamp || realtime?.timestamp), plant: `${siteName} · ${plant.name}`, source: `${siteName} SCADA` }))
+        return [...inverterRows, ...statusRows]
+      })
     })
     const weatherRows = plants.filter((plant) => siteWeather[plant.id]).map((plant) => {
       const weather = siteWeather[plant.id]
@@ -156,8 +217,8 @@ export default function useOperationalFeed({ sldc, plants, siteWeather, weatherU
       plant: alarm.plant, detail: `${alarm.baseAlarm} active since ${timeOf(alarm.startedAt)} · ${durationLabel(alarm.durationMinutes)}`,
       severity: 'critical', source: 'MH SLDC', transient: true,
     }))
-    return [...bhokarInverterRows, ...transitionEvents, ...activeIncidents, ...summaries, ...weatherRows.slice(0, 2), ...sldcRows].slice(0, 6)
-  }, [transitionEvents, alarms, sldc, plants, siteWeather, weatherUpdatedAt, bhokarRealtime])
+    return [...scadaInverterRows, ...transitionEvents, ...activeIncidents, ...summaries, ...weatherRows.slice(0, 2), ...sldcRows].slice(0, 6)
+  }, [transitionEvents, alarms, sldc, plants, siteWeather, weatherUpdatedAt, siteRealtime])
 
   useEffect(() => {
     if (sldc.loading) return

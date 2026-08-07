@@ -1,7 +1,10 @@
-from sldc.scada_realtime import _document_time, _plant_name, extract_inverter_values, extract_plant_totals
+from sldc.scada_realtime import (
+    UMRI_LIVE_COLLECTIONS, _document_time, _lifetime_to_mwh, _plant_name,
+    extract_inverter_values, extract_plant_totals,
+)
 
 
-def test_extracts_flat_and_nested_inverter_tags_up_to_twenty():
+def test_extracts_flat_and_nested_inverter_tags_without_an_artificial_limit():
     document = {
         "INV1_ActivePower": "1,250.5",
         "INV1_Cumulative_Generation": {"value": 5000},
@@ -11,7 +14,7 @@ def test_extracts_flat_and_nested_inverter_tags_up_to_twenty():
         },
     }
     result = extract_inverter_values(document)
-    assert result["active_power"] == {1: 1250.5, 20: 749.5}
+    assert result["active_power"] == {1: 1250.5, 20: 749.5, 21: 999.0}
     assert result["cumulative_generation"] == {1: 5000.0}
 
 
@@ -33,11 +36,51 @@ def test_extracts_zero_padded_and_separated_power_tags():
     assert result["active_power"] == {1: 120, 2: 80}
 
 
+def test_extracts_block_prefixed_inverter_tags_without_collisions():
+    result = extract_inverter_values({
+        "Block1_Inv1_ActivePower": 364.6,
+        "Block1_Inv2_ActivePower": 384.6,
+        "Block2_Inv1_ActivePower": 0,
+        "Block2_Inv1_Cumulative_Generation": 3276910,
+    })
+    assert result["active_power"] == {1001: 364.6, 1002: 384.6, 2001: 0.0}
+    assert result["cumulative_generation"] == {2001: 3276910.0}
+
+
+def test_extracts_total_generation_alias_used_by_block_collections():
+    result = extract_inverter_values({"Block12_INV4_Total_Generation": 23})
+    assert result["cumulative_generation"] == {12004: 23.0}
+
+
+def test_generation_values_are_positive_and_fault_sentinels_are_ignored():
+    result = extract_inverter_values({
+        "INV1_ActivePower": -125.5,
+        "INV1_Cumulative_Generation": -1920,
+        "INV2_Cumulative_Generation": -2147,
+    })
+    assert result["active_power"] == {1: 125.5}
+    assert result["cumulative_generation"] == {1: 1920.0}
+
+
+def test_mixed_lifetime_counter_units_are_normalized_to_mwh():
+    assert _lifetime_to_mwh(1141.09) == 1141.09
+    assert _lifetime_to_mwh(976909) == 976.909
+
+
 def test_bhokar_collection_names_match_plant_mapping():
     assert _plant_name("B2_Jagdeesh_LIVE") == "Jagadeesh"
     assert _plant_name("B5_SoundCasting_LIVE") == "Sound Castings"
     assert _plant_name("B7_Suyash_LIVE") == "Suyesh"
     assert _plant_name("B8_Veersha_LIVE") == "Veeresha"
+
+
+def test_umri_live_collection_names_match_plant_mapping():
+    assert len(UMRI_LIVE_COLLECTIONS) == 8
+    assert _plant_name("U1_WHF_LIVE") == "WHF-1"
+    assert _plant_name("U2_WIF_LIVE") == "WIF"
+    assert _plant_name("U3_Klassic_LIVE") == "Klassic Wheels"
+    assert _plant_name("U7_PV_Sons_LIVE") == "PV Sons"
+    assert _plant_name("U9_WHF_2_LIVE") == "WHF-2"
 
 
 def test_timestamp_ist_is_interpreted_as_india_time():
