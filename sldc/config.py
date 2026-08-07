@@ -30,6 +30,10 @@ class Settings:
     scada_generation_to_mwh: float = float(os.getenv("SCADA_GENERATION_TO_MWH", "0.001"))
     scada_max_age_seconds: int = int(os.getenv("SCADA_MAX_AGE_SECONDS", "300"))
     scada_refresh_seconds: int = int(os.getenv("SCADA_REFRESH_SECONDS", "60"))
+    scada_mapping_workbook: Path = Path(os.getenv(
+        "SCADA_MAPPING_WORKBOOK",
+        r"D:\Digitalization\Project_Doc\Plant_wise_collection_details_with_latlong.xlsx",
+    ))
     allow_sqlite_fallback: bool = _bool("ALLOW_SQLITE_FALLBACK", True)
     sqlite_path: Path = BASE_DIR / os.getenv("SQLITE_PATH", "enrich_solar.db")
     # Bind locally by default so the address shown by Uvicorn is directly

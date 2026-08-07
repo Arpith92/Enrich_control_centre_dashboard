@@ -4,10 +4,11 @@ import {
   Dashboard, SolarPower, NotificationsNone, DescriptionOutlined, QueryStats,
   LightModeOutlined, ConfirmationNumberOutlined, SettingsOutlined, Menu,
   Refresh, Fullscreen, DarkModeOutlined, Bolt, EnergySavingsLeaf, Co2,
-  Speed, Wifi, AccountBalanceWallet, CloudOutlined,
+  Speed, Wifi, CloudOutlined,
   SecurityOutlined, Storage, AccountCircle,
 } from '@mui/icons-material'
 import IndiaMap from './components/IndiaMap'
+import RealtimePortfolioSite from './components/RealtimePortfolioSite'
 import SldcStatusCard from './components/SldcStatusCard'
 import SldcDashboard from './views/SldcDashboard'
 import OperationsLog from './views/OperationsLog'
@@ -29,14 +30,6 @@ const workbookSiteSummary = {
   Bhokar: [9, 27.3], 'NLC Poolangal': [1, 100], BEL1MW: [1, 1], BEL2MW: [1, 2], PGCIL: [1, 85],
 }
 const bhokarPlantNames = ['Jugai', 'Jagadeesh', 'Padmavati', 'Suyesh', 'Sound Castings', 'Supriya', 'IMP', 'Veeresha', 'Omya']
-const bhokarLiveCollections = {
-  jugai: 'B1_Jugai_LIVE', jagadeesh: 'B2_Jagdeesh_LIVE', supriya: 'B3_Supriya_LIVE',
-  padmavati: 'B4_Padmavati_LIVE', 'sound castings': 'B5_SoundCasting_LIVE',
-  soundcasting: 'B5_SoundCasting_LIVE', imp: 'B6_IMP_LIVE', suyesh: 'B7_Suyash_LIVE',
-  suyash: 'B7_Suyash_LIVE', veeresha: 'B8_Veersha_LIVE', veersha: 'B8_Veersha_LIVE',
-  omya: 'B9_Omya_LIVE',
-}
-const bhokarCollectionForPlant = (name = '') => bhokarLiveCollections[name.toLowerCase().trim()]
 const createImmediatePlantMapping = () => Object.fromEntries(Object.entries(workbookSiteSummary).map(([siteName, [count, capacity]]) => [siteName,
   Array.from({ length: count }, (_, index) => ({
     id: `immediate-${siteName}-${index + 1}`,
@@ -48,11 +41,71 @@ const createImmediatePlantMapping = () => Object.fromEntries(Object.entries(work
 ]))
 
 const fmt = (n, digits = 1) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: digits })
-const viewFromHash = () => window.location.hash.startsWith('#bhokar') ? 'Bhokar' : ({
+const viewFromHash = () => (window.location.hash.startsWith('#bhokar') || window.location.hash.startsWith('#scada/')) ? 'Bhokar' : ({
   '#operations-log': 'Operations', '#sldc-reports': 'Reports', '#sldc': 'SLDC', '#weather': 'Weather', '#bhokar': 'Bhokar', '#settings': 'Settings',
 }[window.location.hash] || 'Dashboard')
+const realtimeSelectionFromHash = () => {
+  const match = window.location.hash.match(/^#scada\/([^/]+)\/([^/]+)$/)
+  if (!match) return null
+  try { return { site: decodeURIComponent(match[1]), collection: decodeURIComponent(match[2]) } } catch { return null }
+}
 const Panel = ({ title, children, className = '' }) => <section className={`ops-panel ${className}`}><h3>{title}</h3>{children}</section>
 const getPrecipitationMm = (weather) => Number(weather?.precipitation_mm ?? weather?.precipitation ?? weather?.rain ?? 0)
+const availabilityStorageKey = 'enrich-scada-daily-availability-v1'
+const retainedPrStorageKey = 'enrich-retained-daily-pr-v1'
+const indianDayKey = (date = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+const indianDayStart = (now = Date.now()) => {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(now))
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return Date.parse(`${value.year}-${value.month}-${value.day}T00:00:00+05:30`)
+}
+const useDailyScadaAvailability = (siteRealtime) => {
+  const [records, setRecords] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem(availabilityStorageKey) || '{}') } catch { return {} }
+  })
+  useEffect(() => {
+    const now = Date.now()
+    const day = indianDayKey(new Date(now))
+    const samples = Object.entries(siteRealtime || {}).flatMap(([siteName, site]) => (site?.plants || []).map((plant) => ({
+      key: `${siteName}:${plant.collection}`,
+      online: !plant.communicationIssue && plant.available !== false && plant.dataAvailable !== false,
+    })))
+    if (!samples.length) return
+    setRecords((previous) => {
+      const next = Object.fromEntries(Object.entries(previous).filter(([, record]) => record.day === day))
+      samples.forEach(({ key, online }) => {
+        const record = next[key]
+        if (!record) {
+          const observedMs = Math.max(1, now - indianDayStart(now))
+          next[key] = { day, lastAt: now, online, onlineMs: online ? observedMs : 0, totalMs: observedMs }
+          return
+        }
+        const elapsed = Math.max(0, Math.min(now - Number(record.lastAt || now), 60000))
+        next[key] = { ...record, lastAt: now, online, onlineMs: Number(record.onlineMs || 0) + (record.online ? elapsed : 0), totalMs: Number(record.totalMs || 0) + elapsed }
+      })
+      window.localStorage.setItem(availabilityStorageKey, JSON.stringify(next))
+      return next
+    })
+  }, [siteRealtime])
+  return records
+}
+const useRetainedDailyPr = (scopeKey, currentPr) => {
+  const [records, setRecords] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem(retainedPrStorageKey) || '{}') } catch { return {} }
+  })
+  const day = indianDayKey()
+  useEffect(() => {
+    if (!Number.isFinite(currentPr) || currentPr <= 0) return
+    setRecords((previous) => {
+      const next = { ...previous, [scopeKey]: { day, value: currentPr } }
+      window.localStorage.setItem(retainedPrStorageKey, JSON.stringify(next))
+      return next
+    })
+  }, [scopeKey, currentPr, day])
+  if (Number.isFinite(currentPr) && currentPr > 0) return currentPr
+  const retained = records[scopeKey]
+  return retained?.day === day ? Number(retained.value || 0) : 0
+}
 
 const Nav = ({ collapsed, onToggle, active, onSelect }) => {
   const items = [
@@ -66,9 +119,10 @@ const Nav = ({ collapsed, onToggle, active, onSelect }) => {
   </aside>
 }
 
-const Header = ({ clock, lightTheme, onToggleTheme }) => <header className="ops-header">
+const Header = ({ clock, lightTheme, onToggleTheme, searchOptions, onSearch }) => <header className="ops-header">
   <div className="brand"><img className="brand-logo" src={enrichLogo} alt="Enrich - The Solar People" /><div><b>ENRICH SOLAR OPERATIONS</b><span>SOLAR PLANT MONITORING DASHBOARD</span></div></div>
   <div className="head-tools">
+    <label className="header-search"><QueryStats /><input list="dashboard-search-options" placeholder="Search site, plant or location" onChange={(event) => onSearch(event.target.value)} /><datalist id="dashboard-search-options">{searchOptions.map((option) => <option key={option.key} value={option.label}>{option.description}</option>)}</datalist></label>
     <div className="header-user"><AccountCircle /><span>Hi, <b>Arpith Shetty</b></span></div>
     <div className="clock">{clock.format('hh:mm:ss A')}<span>{clock.format('DD MMM YYYY, ddd')}</span></div>
     <button onClick={() => window.dispatchEvent(new Event('dashboard-refresh'))}><Refresh /><span>Refresh</span></button><button onClick={() => document.documentElement.requestFullscreen?.()}><Fullscreen /><span>Fullscreen</span></button>
@@ -79,19 +133,19 @@ const Header = ({ clock, lightTheme, onToggleTheme }) => <header className="ops-
 const Kpis = ({ m }) => {
   const cards = [
     ['CURRENT GENERATION', fmt(m.currentGeneration, 2), ' MW', EnergySavingsLeaf, `${((m.currentGeneration / m.totalCapacity) * 100).toFixed(2)}% of Capacity`],
-    ["TODAY'S GENERATION", fmt(m.todayGeneration, 2), ' MWh', Bolt, 'Updated live'],
-    ["TODAY'S REVENUE", `₹ ${fmt(m.revenue, 2)}`, ' Cr', AccountBalanceWallet, '@ ₹4.20 / kWh'],
-    ['CO₂ SAVED TODAY', fmt(m.co2Saved, 2), ' Ton', Co2, 'Equivalent Reduction'],
-    ['PR (AVG)', fmt(m.averagePr, 2), ' %', Speed, '↑ 2.31%'],
-    ['AVAILABILITY (AVG)', fmt(m.averageAvailability, 2), ' %', Wifi, '↑ 0.68%'],
-    ['CUF (AVG)', fmt(m.averageCuf, 2), ' %', QueryStats, '↑ 1.22%'],
-    ['GRID EXPORT', fmt(m.gridExport, 2), ' MW', EnergySavingsLeaf, '98.0% of Generation'],
+    ["TODAY'S GENERATION", fmt(m.todayGeneration, 2), ' MWh', Bolt, 'Today'],
+    ['ACTIVE INVERTERS', `${fmt(m.activeInverters, 0)} / ${fmt(m.totalInverters, 0)}`, '', Wifi, 'Live status'],
+    ['CO₂ SAVED TODAY', fmt(m.co2Saved, 2), ' Ton', Co2, 'Updated today'],
+    ['PR', fmt(m.averagePr, 2), ' %', Speed, 'Retained for the day'],
+    ['SCADA AVAILABILITY', fmt(m.averageAvailability, 2), ' %', Wifi, 'Today'],
+    ['SPECIFIC YIELD', fmt(m.instantaneousYield, 2), ' MW/MWp', QueryStats, `Daily ${fmt(m.daySpecificYield, 2)} kWh/kWp/day`],
+    ['DAILY IRRADIATION', fmt(m.irradiance, 2), ' kWh/m²', LightModeOutlined, 'Retained until 23:59'],
   ]
   return <div className="kpi-strip">{cards.map(([label, value, unit, Icon, note]) =>
     <div className="ops-kpi" key={label}><Icon /><div><span>{label}</span><b>{value}<small>{unit}</small></b><em>{note}</em></div></div>)}</div>
 }
 
-const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteWeather, bhokarRealtime }) => {
+const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteWeather, siteRealtime }) => {
   const [customers, setCustomers] = useState(() => simulateThirdPartyCustomers(new Date(), siteWeather))
   const [active, setActive] = useState(null)
   useEffect(() => {
@@ -130,14 +184,8 @@ const ThirdPartyPortfolio = ({ plants, scope, onSelectScope, plantMapping, siteW
     <div className="portfolio-rows portfolio-site-list">
       {showEnrich && [...plants].sort((a, b) => b.capacity - a.capacity || a.name.localeCompare(b.name)).map((plant) => {
         const mappedPlants = plantMapping[plant.name] || []
-        const issueCount = plant.name === 'Bhokar' && bhokarRealtime?.plants
-          ? bhokarRealtime.plants.filter((item) => !item.available).length
-          : mappedPlants.filter((item) => item.communicationIssue).length
-        const failed = (plant.name !== 'Bhokar' && (plant.communication === 'Failed' || plant.communicationIssue)) || (mappedPlants.length > 0 && issueCount === mappedPlants.length)
-        const partial = issueCount > 0 && !failed
-        const selected = (scope?.type === 'enrich' && scope.id === plant.id) || (scope?.type === 'enrich-plant' && scope.siteId === plant.id)
-        const dcCapacity = mappedPlants.reduce((sum, mappedPlant) => sum + mappedPlant.dc, 0) || plant.capacity * 1.2
-        return <button className={`portfolio-site enrich-site-row ${failed ? 'site-offline' : partial ? 'site-partial' : 'site-online'} ${selected ? 'active' : ''}`} title={failed ? 'All plants have communication issues' : partial ? `${issueCount} of ${mappedPlants.length} plants has a communication issue` : `${mappedPlants.length || 1} plant(s) · all communication healthy`} key={plant.id} onClick={() => onSelectScope(selected ? null : { type: 'enrich', id: plant.id, name: plant.name })}><span><b>{plant.name}</b></span><strong>{dcCapacity.toFixed(2)} MWp</strong><strong>{plant.currentMw.toFixed(2)} MW</strong></button>
+        const realtime = siteRealtime?.[plant.name]
+        return <RealtimePortfolioSite key={plant.id} plant={plant} mappedPlants={mappedPlants} realtime={realtime} scope={scope} onSelectScope={onSelectScope} />
       })}
       {[...visibleCustomers].sort((a, b) => Number(a.commonInfra) - Number(b.commonInfra) || b.dc - a.dc || a.name.localeCompare(b.name)).map((customer) => <div className={`portfolio-customer-section ${active === customer.id ? 'active' : ''}`} key={customer.id}>
         <button className={`portfolio-site customer-site-row ${customer.commonInfra ? 'site-common-infra' : 'site-third-party'} comm-${customer.communicationStatus} ${scope?.customerId === customer.id || scope?.id === customer.id ? 'active' : ''}`} title={customer.commonInfra ? `${customer.plants.length} common-infrastructure plants · no real-time telemetry` : customer.communicationIssueCount ? `${customer.communicationIssueCount} of ${customer.plants.length} plants have communication issues` : 'All plants communicating'} onClick={() => { const isSelected = scope?.customerId === customer.id || scope?.id === customer.id; select(customer.id); onSelectScope(isSelected ? null : { type: 'customer', id: customer.id, customerId: customer.id, name: customer.name, customer }) }}><span><b>{customer.name}</b></span><strong>{customer.dc.toFixed(2)} MWp</strong><strong>{customer.simulatedMw.toFixed(2)} MW</strong></button>
@@ -166,12 +214,12 @@ const weatherVisual = (code, precipitation = 0) => {
 const RightRail = ({ alarms, events, plants, siteWeather, weatherUpdatedAt, onOpenLogs }) => <div className="right-rail">
   <Panel title="⚠ LIVE ALARMS" className="alarm-box"><b className="alarm-count">{alarms.length}</b><button className="feed-more" onClick={onOpenLogs}>More →</button>
     <div className="alarm-head"><span>TIME</span><span>PLANT</span><span>ALARM</span><span>SEVERITY</span></div>
-    <div className="alarm-live-list">{alarms.slice(0, 5).map((alarm) => <div className="alarm-row" key={alarm.id}><span>{alarm.time}</span><span>{alarm.plant}</span><span>{alarm.alarm}</span><b className={alarm.severity.toLowerCase()}>{alarm.severity}</b></div>)}
+    <div className="alarm-live-list">{alarms.slice(0, 3).map((alarm) => <div className="alarm-row" key={alarm.id} title={`${alarm.plant} · ${alarm.alarm}`}><span>{alarm.time}</span><span>{alarm.plant}</span><span>{alarm.alarm}</span><b className={alarm.severity.toLowerCase()}>{alarm.severity}</b></div>)}
       {!alarms.length && <div className="alarm-empty"><i /> No active SLDC or weather alarms</div>}
     </div>
   </Panel>
   <Panel title="♧ LIVE EVENTS" className="events-box"><button className="feed-more" onClick={onOpenLogs}>More →</button>
-    {events.slice(0, 6).map((event) => <div className={`event-row ${event.severity}`} key={event.id}><i/><span>{event.time}</span><div><b>{event.plant}</b><small>{event.detail}</small></div></div>)}
+    {events.slice(0, 3).map((event) => <div className={`event-row ${event.severity}`} key={event.id} title={`${event.plant} · ${event.detail}`}><i/><span>{event.time}</span><div><b>{event.plant}</b><small>{event.detail}</small></div></div>)}
   </Panel>
   <Panel title="SITE WEATHER · LIVE" className="weather-box site-weather">
     <span className="weather-source">{weatherUpdatedAt ? `LIVE · ${weatherUpdatedAt.format('HH:mm:ss')}` : 'CONNECTING…'}</span>
@@ -196,34 +244,121 @@ const RightRail = ({ alarms, events, plants, siteWeather, weatherUpdatedAt, onOp
   </Panel>
 </div>
 
-const Spark = () => <svg className="spark" viewBox="0 0 300 100" preserveAspectRatio="none"><defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop stopColor="#8cff55" stopOpacity=".35"/><stop offset="1" stopColor="#8cff55" stopOpacity="0"/></linearGradient></defs><path d="M0 95 C35 95 38 84 60 52 S105 27 135 18 S190 5 220 30 S260 62 300 77 L300 100 L0 100Z" fill="url(#sg)"/><path d="M0 95 C35 95 38 84 60 52 S105 27 135 18 S190 5 220 30 S260 62 300 77" fill="none" stroke="#a6ff68" strokeWidth="2"/></svg>
-
-const weeklyGeneration = [1782, 1850, 1918, 1986, 2054, 2122, 2190]
-const weeklyGenerationPeak = Math.max(...weeklyGeneration)
-
-const Bottom = ({ plants }) => <div className="bottom-grid">
-  <Panel title="GENERATION TREND · TODAY (LIVE)"><Spark /><div className="axis">{['00:00','04:00','08:00','12:00','16:00','20:00','24:00'].map((time)=><span key={time}>{time}</span>)}</div></Panel>
-  <Panel title="GENERATION LAST 7 DAYS (MWh)"><div className="bars">{weeklyGeneration.map((generation)=><i key={generation} style={{height:`${(generation / weeklyGenerationPeak) * 100}%`}}><span>{generation}</span></i>)}</div></Panel>
+const Bottom = ({ plants, currentGeneration, todayGeneration, scopeKey }) => {
+  const historyKey = `enrich-generation-daily-${scopeKey}`
+  const trendKey = `enrich-generation-today-${scopeKey}`
+  const [trend, setTrend] = useState(() => {
+    try {
+      const today = indianDayKey()
+      const stored = JSON.parse(window.localStorage.getItem(trendKey) || '[]').filter((item) => item.date === today)
+      const now = new Date()
+      const firstLive = stored.length ? new Date(stored[0].time) : now
+      const morning = new Date(now); morning.setHours(6, 0, 0, 0)
+      const currentHour = now.getHours() + now.getMinutes() / 60
+      const solarNow = Math.max(.08, Math.sin(Math.PI * Math.max(0, Math.min(12, currentHour - 6)) / 12))
+      const peak = Number(currentGeneration || 0) / solarNow
+      const simulated = []
+      for (let time = morning.getTime(); time < firstLive.getTime(); time += 15 * 60000) {
+        const point = new Date(time)
+        const hour = point.getHours() + point.getMinutes() / 60
+        const solar = Math.max(0, Math.sin(Math.PI * Math.max(0, Math.min(12, hour - 6)) / 12))
+        simulated.push({ date: today, time: point, value: peak * solar, source: 'simulated' })
+      }
+      return [...simulated, ...stored.map((item) => ({ ...item, time: new Date(item.time), source: item.source || 'live' })), { date: today, time: now, value: Number(currentGeneration || 0), source: 'live' }]
+    } catch { return [{ date: indianDayKey(), time: new Date(), value: Number(currentGeneration || 0) }] }
+  })
+  const [daily, setDaily] = useState(() => {
+    let stored = []
+    try { stored = JSON.parse(window.localStorage.getItem(historyKey) || '[]') } catch { stored = [] }
+    const today = new Date()
+    const liveByDate = new Map(stored.filter((item) => item.source === 'live').map((item) => [item.date, item]))
+    const baseline = Math.max(1, Number(todayGeneration || 0))
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(today); date.setDate(today.getDate() - (6 - index))
+      const key = indianDayKey(date)
+      const variation = .92 + ((date.getDate() * 17 + scopeKey.length * 7) % 17) / 100
+      return liveByDate.get(key) || { date: key, value: baseline * variation, source: 'simulated' }
+    })
+  })
+  const [hoveredTrend, setHoveredTrend] = useState(null)
+  useEffect(() => {
+    setTrend((previous) => {
+      const today = indianDayKey()
+      const retained = previous.filter((item) => item.date === today)
+      const sample = { date: today, time: new Date(), value: Number(currentGeneration || 0), source: 'live' }
+      const last = retained.at(-1)
+      const next = (last && sample.time - new Date(last.time) < 60000
+        ? [...retained.slice(0, -1), sample] : [...retained, sample]).slice(-720)
+      window.localStorage.setItem(trendKey, JSON.stringify(next))
+      return next
+    })
+  }, [currentGeneration, trendKey])
+  useEffect(() => {
+    const date = indianDayKey()
+    setDaily((previous) => {
+      const next = [...previous.filter((item) => item.date !== date), { date, value: Number(todayGeneration || 0), source: 'live' }].sort((a, b) => a.date.localeCompare(b.date)).slice(-7)
+      window.localStorage.setItem(historyKey, JSON.stringify(next))
+      return next
+    })
+  }, [todayGeneration, historyKey])
+  const trendMax = Math.max(1, ...trend.map((item) => item.value))
+  const morning = new Date(); morning.setHours(6, 0, 0, 0)
+  const now = new Date()
+  const periodMs = Math.max(1, now - morning)
+  const chartPoints = trend.map((item) => ({ ...item, x: Math.max(0, Math.min(300, ((item.time - morning) / periodMs) * 300)), y: 96 - (item.value / trendMax) * 88 }))
+  const smoothPath = chartPoints.length ? chartPoints.reduce((path, point, index) => {
+    if (!index) return `M ${point.x} ${point.y}`
+    const previous = chartPoints[index - 1]
+    const midpoint = (previous.x + point.x) / 2
+    return `${path} C ${midpoint} ${previous.y}, ${midpoint} ${point.y}, ${point.x} ${point.y}`
+  }, '') : ''
+  const onTrendMove = (event) => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = ((event.clientX - bounds.left) / bounds.width) * 300
+    setHoveredTrend(chartPoints.reduce((closest, point) => !closest || Math.abs(point.x - x) < Math.abs(closest.x - x) ? point : closest, null))
+  }
+  const dailyBars = [...daily].sort((a, b) => b.date.localeCompare(a.date))
+  const dailyPeak = Math.max(1, ...dailyBars.map((item) => item.value))
+  return <div className="bottom-grid">
+  <Panel title="GENERATION TREND · TODAY (LIVE)"><div className="interactive-trend"><svg className="spark" viewBox="0 0 300 100" preserveAspectRatio="none" onMouseMove={onTrendMove} onMouseLeave={() => setHoveredTrend(null)}><path d={smoothPath} fill="none" stroke="#a6ff68" strokeWidth="2"/>{hoveredTrend && <><line x1={hoveredTrend.x} x2={hoveredTrend.x} y1="5" y2="98" stroke="#6ddcff" strokeWidth=".6" strokeDasharray="2 2"/><circle cx={hoveredTrend.x} cy={hoveredTrend.y} r="3" fill="#071827" stroke="#a6ff68" strokeWidth="1.5"/></>}</svg>{hoveredTrend && <div className="trend-tooltip" style={{ left: `${Math.min(82, Math.max(5, (hoveredTrend.x / 300) * 100))}%` }}><b>{hoveredTrend.value.toFixed(2)} MW</b><span>{hoveredTrend.time.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span><i>{hoveredTrend.source === 'simulated' ? 'SIMULATED' : 'LIVE'}</i></div>}</div><div className="trend-endpoints"><span>{trend[0].time.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})} · {trend[0].value.toFixed(2)} MW</span><span>NOW · {trend.at(-1).value.toFixed(2)} MW</span></div></Panel>
+  <Panel title="GENERATION · LAST 7 DAYS (MWh)"><div className="generation-seven-bars">{dailyBars.map((item, index)=><div className="generation-day-bar" key={item.date}><b>{item.value.toLocaleString('en-IN',{maximumFractionDigits:1})}</b><i style={{height:`${Math.max(5,(item.value / dailyPeak) * 100)}%`}}/><span>{index === 0 ? 'Today' : new Date(`${item.date}T00:00:00`).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span><small className={item.source}>{item.source === 'live' ? 'LIVE' : 'SIM'}</small></div>)}</div></Panel>
   <Panel title="TOP 5 PLANTS BY CURRENT GENERATION"><div className="rank">{[...plants].sort((a,b)=>b.currentMw-a.currentMw).slice(0,5).map(p=><span key={p.id}>{p.name}<i style={{width:`${Math.min(100,p.currentMw)}%`}}/><b>{p.currentMw.toFixed(2)}</b></span>)}</div></Panel>
-</div>
+</div>}
 
 const Footer = () => <footer className="status-footer">{[[SecurityOutlined,'SCADA STATUS','ONLINE'],[CloudOutlined,'API STATUS','ONLINE'],[Wifi,'NETWORK HEALTH','GOOD'],[Storage,'DATABASE','HEALTHY'],[Speed,'SERVER LOAD','24%'],[CloudOutlined,'CLOUD BACKUP','OK']].map(([Icon,a,b])=><div key={a}><Icon/><span>{a}<b>{b}</b></span></div>)}</footer>
 
 const DashboardView = () => {
-  const { plants, metrics, clock, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites, bhokarRealtime } = useSimulationData()
+  const { plants, metrics, clock, siteWeather, weatherUpdatedAt, thirdPartyWeatherSites, siteRealtime } = useSimulationData()
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [lightTheme, setLightTheme] = useState(() => window.localStorage.getItem('enrich-dashboard-theme') === 'light')
   const [activeView, setActiveView] = useState(viewFromHash)
   const [scope, setScope] = useState(null)
-  const [selectedBhokarCollection, setSelectedBhokarCollection] = useState(null)
+  const initialRealtimeSelection = realtimeSelectionFromHash()
+  const [selectedBhokarCollection, setSelectedBhokarCollection] = useState(initialRealtimeSelection?.collection || null)
+  const [selectedRealtimeSite, setSelectedRealtimeSite] = useState(initialRealtimeSelection?.site || 'Bhokar')
   const [plantMapping, setPlantMapping] = useState(createImmediatePlantMapping)
   const sldc = useSldcData()
-  const liveFeed = useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt, bhokarRealtime })
+  const liveFeed = useOperationalFeed({ sldc, plants, siteWeather, weatherUpdatedAt, siteRealtime })
+  const dailyAvailability = useDailyScadaAvailability(siteRealtime)
   const toggleTheme = () => setLightTheme((current) => {
     const next = !current
     window.localStorage.setItem('enrich-dashboard-theme', next ? 'light' : 'dark')
     return next
   })
+  const searchOptions = [
+    ...plants.map((plant) => ({ key: `site-${plant.id}`, label: plant.name, description: `Site · ${plant.state}`, scope: { type: 'enrich', id: plant.id, name: plant.name } })),
+    ...Object.entries(plantMapping).flatMap(([siteName, mappedPlants]) => mappedPlants.map((mappedPlant) => {
+      const parent = plants.find((plant) => plant.name === siteName)
+      return { key: `plant-${mappedPlant.id}`, label: `${mappedPlant.plantName} · ${siteName}`, description: `${mappedPlant.customerName} · ${mappedPlant.state}`, scope: parent ? { type: 'enrich-plant', id: mappedPlant.id, siteId: parent.id, name: mappedPlant.plantName, parent, mappedPlant } : null }
+    })).filter((option) => option.scope),
+  ]
+  const applySearch = (value) => {
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return
+    const match = searchOptions.find((option) => option.label.toLowerCase() === normalized)
+      || searchOptions.find((option) => `${option.label} ${option.description}`.toLowerCase().includes(normalized))
+    if (match) { setScope(match.scope); setActiveView('Dashboard'); if (window.location.hash) history.replaceState(null, '', window.location.pathname) }
+  }
   useEffect(() => {
     const loadMapping = async () => {
       try {
@@ -262,7 +397,7 @@ const DashboardView = () => {
     }
     loadMapping()
   }, [])
-  const selectedEnrichPlant = scope?.type === 'enrich' ? plants.find((plant) => plant.id === scope.id) : scope?.type === 'enrich-plant' ? plants.find((plant) => plant.id === scope.siteId) : null
+  const selectedEnrichPlant = scope?.type === 'enrich' ? plants.find((plant) => plant.id === scope.id) : scope?.type === 'enrich-plant' || scope?.type === 'scada-block' ? plants.find((plant) => plant.id === scope.siteId) : null
   const visiblePlants = selectedEnrichPlant
     ? [selectedEnrichPlant]
     : scope?.type === 'customer' || scope?.type === 'third-party-plant' || scope?.type === 'portfolio-third-party' || scope?.type === 'portfolio-common-infra' ? [] : plants
@@ -351,11 +486,137 @@ const DashboardView = () => {
     averageCuf: selectedEnrichPlant?.cuf ?? (isThirdPartyScope ? ((scopeTodayGeneration || 0) / Math.max(1, scopeCapacity * 24)) * 100 : metrics.averageCuf),
     gridExport: (scopeGeneration || 0) * .98,
   } : combinedMetrics
+  const allRealtimePlants = Object.entries(siteRealtime || {}).flatMap(([siteName, site]) => (site?.plants || []).map((plant) => {
+    const mappedPlant = (plantMapping[siteName] || []).find((mapped) => mapped.collection === plant.collection)
+      || (plantMapping[siteName] || []).find((mapped) => mapped.plantName === plant.plantName || mapped.plantName === plant.name)
+    return {
+      ...mappedPlant,
+      ...plant,
+      ac: Number(plant.ac || mappedPlant?.ac || 0),
+      dc: Number(plant.dc || mappedPlant?.dc || 0),
+      siteName,
+    }
+  }))
+  let selectedRealtimePlants = allRealtimePlants
+  if (selectedEnrichPlant) selectedRealtimePlants = allRealtimePlants.filter((plant) => plant.siteName === selectedEnrichPlant.name)
+  if (scope?.type === 'enrich-plant' && scope.mappedPlant?.collection) {
+    selectedRealtimePlants = selectedRealtimePlants.filter((plant) => plant.collection === scope.mappedPlant.collection)
+  }
+  const blockNumber = scope?.type === 'scada-block' ? Number(scope.blockNumber) : null
+  const selectedTelemetry = selectedRealtimePlants.map((plant) => {
+    const inverters = blockNumber
+      ? (plant.inverters || []).filter((inverter) => new RegExp(`^Block\\s+${blockNumber}\\s+Inv\\s+`, 'i').test(inverter.inverter || ''))
+      : (plant.inverters || [])
+    if (blockNumber && !inverters.length) return null
+    const blockCount = blockNumber ? Math.max(1, new Set((plant.inverters || []).map((inverter) => String(inverter.inverter || '').match(/^Block\s+(\d+)/i)?.[1]).filter(Boolean)).size) : 1
+    const currentMw = blockNumber ? inverters.reduce((sum, inverter) => sum + Number(inverter.activePowerMw || 0), 0) : Number(plant.currentMw || 0)
+    const todayMWh = blockNumber ? inverters.reduce((sum, inverter) => sum + Number(inverter.dailyGenerationMWh || 0), 0) : Number(plant.dailyGenerationMWh || 0)
+    const totalInverters = inverters.length || Number(plant.inverterTotal || 0)
+    const generating = Number(plant.gti || 0) > 0 || currentMw > 0
+    const activeInverters = blockNumber
+      ? inverters.filter((inverter) => (inverter.activePowerRaw ?? inverter.activePowerMw) != null && (!generating || Number(inverter.activePowerRaw ?? inverter.activePowerMw) !== 0)).length
+      : Number(plant.communicatingInverters ?? totalInverters)
+    return {
+      ...plant, inverters, currentMw, todayMWh, totalInverters, activeInverters,
+      ac: Number(plant.ac || 0) / blockCount, dc: Number(plant.dc || plant.ac || 0) / blockCount,
+      availabilityKey: `${plant.siteName}:${plant.collection}`,
+    }
+  }).filter(Boolean)
+  const hasRealtimeScope = selectedTelemetry.length > 0 && (!isThirdPartyScope || selectedEnrichPlant)
+  const realtimeCapacity = selectedTelemetry.reduce((sum, plant) => sum + plant.ac, 0)
+  const realtimeDcCapacity = selectedTelemetry.reduce((sum, plant) => sum + plant.dc, 0)
+  const realtimeGeneration = selectedTelemetry.reduce((sum, plant) => sum + plant.currentMw, 0)
+  const realtimeToday = selectedTelemetry.reduce((sum, plant) => sum + plant.todayMWh, 0)
+  const realtimeTotalInverters = selectedTelemetry.reduce((sum, plant) => sum + plant.totalInverters, 0)
+  const realtimeActiveInverters = selectedTelemetry.reduce((sum, plant) => sum + plant.activeInverters, 0)
+  const dailyIrradiationValues = visibleWeatherPlants.map((plant) => Number(siteWeather[plant.id]?.gti_kwh_m2))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+  const dailyIrradiation = dailyIrradiationValues.length ? dailyIrradiationValues.reduce((sum, value) => sum + value, 0) / dailyIrradiationValues.length : 0
+  const availabilityTotals = selectedTelemetry.reduce((totals, plant) => {
+    const record = dailyAvailability[plant.availabilityKey]
+    if (record) { totals.online += Number(record.onlineMs || 0); totals.total += Number(record.totalMs || 0) }
+    return totals
+  }, { online: 0, total: 0 })
+  const useSelectedRealtimeGeneration = hasRealtimeScope && Boolean(scope)
+    && !['portfolio-enrich', 'portfolio-third-party', 'portfolio-common-infra'].includes(scope?.type)
+  const fleetEnrichDc = plants.reduce((sum, plant) => sum + ((plantMapping[plant.name] || []).reduce((total, mappedPlant) => total + Number(mappedPlant.dc || 0), 0) || Number(plant.capacity || 0) * 1.2), 0)
+  const selectedMappedDc = scope?.mappedPlant?.dc || (selectedEnrichPlant ? (plantMapping[selectedEnrichPlant.name] || []).reduce((sum, mappedPlant) => sum + Number(mappedPlant.dc || 0), 0) : 0)
+  const yieldDcCapacity = useSelectedRealtimeGeneration
+    ? (scope?.type === 'enrich' ? Number(selectedMappedDc || realtimeDcCapacity) : realtimeDcCapacity)
+    : !scope ? fleetEnrichDc + portfolioThirdPartyCapacity
+      : scope?.type === 'portfolio-enrich' ? fleetEnrichDc
+        : scope?.type === 'portfolio-third-party' || scope?.type === 'portfolio-common-infra' ? scopedPortfolioCapacity
+          : Number(selectedMappedDc || scope?.plant?.dc || scope?.customer?.dc || scopedMetrics.totalCapacity || 0)
+  const yieldDailyGeneration = useSelectedRealtimeGeneration ? realtimeToday : scopedMetrics.todayGeneration
+  const yieldActivePower = useSelectedRealtimeGeneration ? realtimeGeneration : scopedMetrics.currentGeneration
+  const selectedSiteRealtime = selectedEnrichPlant ? siteRealtime?.[selectedEnrichPlant.name] : null
+  const siteYieldDailyGeneration = scope?.type === 'enrich' && selectedSiteRealtime?.dailyGenerationMWh != null
+    ? Number(selectedSiteRealtime.dailyGenerationMWh) : yieldDailyGeneration
+  const siteYieldActivePower = scope?.type === 'enrich' && selectedSiteRealtime?.currentMw != null
+    ? Number(selectedSiteRealtime.currentMw) : yieldActivePower
+  const panIndiaInstantaneousYields = [
+    ...plants.map((plant) => {
+      const dc = (plantMapping[plant.name] || []).reduce((sum, mappedPlant) => sum + Number(mappedPlant.dc || 0), 0) || Number(plant.capacity || 0) * 1.2
+      return dc > 0 ? Number(plant.currentMw || 0) / dc : null
+    }),
+    ...allThirdPartyPlants.map((plant) => Number(plant.dc || 0) > 0 ? Number(plant.simulatedMw || 0) / Number(plant.dc) : null),
+  ].filter((value) => Number.isFinite(value))
+  const panIndiaSiteYields = [
+    ...plants.map((plant) => {
+      const dc = (plantMapping[plant.name] || []).reduce((sum, mappedPlant) => sum + Number(mappedPlant.dc || 0), 0) || Number(plant.capacity || 0) * 1.2
+      const dailyGeneration = Number(plant.todayMwh)
+      return dc > 0 && Number.isFinite(dailyGeneration) && plant.telemetrySource !== 'Pending' && plant.communication !== 'Pending'
+        ? dailyGeneration / dc : null
+    }),
+    ...allThirdPartyPlants.map((plant) => {
+      const dc = Number(plant.dc)
+      const dailyGeneration = Number(plant.todayMwh)
+      return !plant.noTelemetry && dc > 0 && Number.isFinite(dailyGeneration) ? dailyGeneration / dc : null
+    }),
+  ].filter((value) => Number.isFinite(value))
+  const daySpecificYield = !scope && panIndiaSiteYields.length
+    ? panIndiaSiteYields.reduce((sum, value) => sum + value, 0) / panIndiaSiteYields.length
+    : yieldDcCapacity > 0 ? siteYieldDailyGeneration / yieldDcCapacity : 0
+  const instantaneousYield = !scope && panIndiaInstantaneousYields.length
+    ? panIndiaInstantaneousYields.reduce((sum, value) => sum + value, 0) / panIndiaInstantaneousYields.length
+    : yieldDcCapacity > 0 ? siteYieldActivePower / yieldDcCapacity : 0
+  const calculatedPr = dailyIrradiation > 0
+    ? Math.min(100, Math.max(0, (daySpecificYield / dailyIrradiation) * 100)) : 0
+  const retainedPr = useRetainedDailyPr(scope?.id || scope?.type || 'all-sites', calculatedPr)
+  const realtimeKpis = hasRealtimeScope ? {
+    ...scopedMetrics,
+    totalCapacity: useSelectedRealtimeGeneration ? (realtimeCapacity || realtimeDcCapacity || 1) : scopedMetrics.totalCapacity,
+    currentGeneration: useSelectedRealtimeGeneration ? realtimeGeneration : scopedMetrics.currentGeneration,
+    todayGeneration: useSelectedRealtimeGeneration ? realtimeToday : scopedMetrics.todayGeneration,
+    activeInverters: realtimeActiveInverters,
+    totalInverters: realtimeTotalInverters,
+    co2Saved: (useSelectedRealtimeGeneration ? realtimeToday : scopedMetrics.todayGeneration) * .82,
+    averagePr: retainedPr,
+    averageAvailability: availabilityTotals.total ? (availabilityTotals.online / availabilityTotals.total) * 100 : 0,
+    instantaneousYield,
+    daySpecificYield,
+    irradiance: dailyIrradiation,
+  } : {
+    ...scopedMetrics,
+    activeInverters: scopedMetrics.onlinePlants || 0,
+    totalInverters: scopedMetrics.totalPlants || 0,
+    instantaneousYield,
+    daySpecificYield,
+    averagePr: retainedPr,
+    irradiance: dailyIrradiation,
+  }
   const selectedEnrichName = selectedEnrichPlant?.name
   const visibleAlarms = selectedEnrichName ? liveFeed.alarms.filter((item) => item.plant === selectedEnrichName) : liveFeed.alarms
   const visibleEvents = selectedEnrichName ? liveFeed.events.filter((item) => item.plant === selectedEnrichName) : liveFeed.events
   useEffect(() => {
-    const syncHash = () => setActiveView(viewFromHash())
+    const syncHash = () => {
+      setActiveView(viewFromHash())
+      const selection = realtimeSelectionFromHash()
+      if (selection) {
+        setSelectedRealtimeSite(selection.site)
+        setSelectedBhokarCollection(selection.collection)
+      }
+    }
     window.addEventListener('hashchange', syncHash)
     return () => window.removeEventListener('hashchange', syncHash)
   }, [])
@@ -370,10 +631,16 @@ const DashboardView = () => {
     else if (view === 'Settings') window.location.hash = 'settings'
     else if (window.location.hash) history.replaceState(null, '', window.location.pathname)
   }
+  const openPlantDetails = (siteName, collection) => {
+    setSelectedRealtimeSite(siteName)
+    setSelectedBhokarCollection(collection)
+    setActiveView('Bhokar')
+    window.location.hash = `scada/${encodeURIComponent(siteName)}/${encodeURIComponent(collection)}`
+  }
   return <Box className={`ops-app ${navCollapsed ? 'nav-collapsed' : ''} ${lightTheme ? 'light-theme' : ''}`}>
     <Nav collapsed={navCollapsed} onToggle={() => setNavCollapsed((value) => !value)} active={activeView === 'Operations' ? 'Alarms' : activeView} onSelect={selectView} />
-    <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' || activeView === 'Bhokar' || activeView === 'Settings' ? 'sldc-main' : ''}><Header clock={clock} lightTheme={lightTheme} onToggleTheme={toggleTheme}/>{activeView === 'Bhokar'
-      ? <BhokarDashboard initialCollection={selectedBhokarCollection} onBack={() => selectView('Dashboard')} />
+    <main className={activeView === 'SLDC' || activeView === 'Reports' || activeView === 'Operations' || activeView === 'Weather' || activeView === 'Bhokar' || activeView === 'Settings' ? 'sldc-main' : ''}><Header clock={clock} lightTheme={lightTheme} onToggleTheme={toggleTheme} searchOptions={searchOptions} onSearch={applySearch}/>{activeView === 'Bhokar'
+      ? <BhokarDashboard siteName={selectedRealtimeSite} initialCollection={selectedBhokarCollection} initialData={siteRealtime[selectedRealtimeSite]} onBack={() => selectView('Dashboard')} />
       : activeView === 'Settings'
       ? <Suspense fallback={<div className="weather-loading">Loading site settings…</div>}><SiteSettings onBack={() => selectView('Dashboard')} /></Suspense>
       : activeView === 'Weather'
@@ -381,7 +648,7 @@ const DashboardView = () => {
       : activeView === 'Operations' ? <OperationsLog plants={plants} onBack={() => selectView('Dashboard')} />
       : activeView === 'SLDC' || activeView === 'Reports'
       ? <SldcDashboard data={sldc} onBack={() => selectView('Dashboard')} openReports={activeView === 'Reports'} />
-      : <><Kpis m={scopedMetrics}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime}/><SldcStatusCard data={sldc} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} bhokarRealtime={bhokarRealtime} lightTheme={lightTheme} onOpenBhokarPlant={(mappedPlant) => { const collection = bhokarCollectionForPlant(mappedPlant.plantName); setSelectedBhokarCollection(collection || null); setActiveView('Bhokar'); window.location.hash = collection ? `bhokar/${collection}` : 'bhokar' }}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom plants={visiblePlants}/><Footer /></>}
+      : <><Kpis m={realtimeKpis}/><div className="main-grid"><div className="left-rail portfolio-rail"><ThirdPartyPortfolio plants={plants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} siteRealtime={siteRealtime}/><SldcStatusCard data={sldc} selectedSite={selectedEnrichPlant?.name || null} onOpen={() => selectView('SLDC')} /></div><IndiaMap plants={visiblePlants} scope={scope} onSelectScope={setScope} plantMapping={plantMapping} siteWeather={siteWeather} siteRealtime={siteRealtime} onOpenPlantDetails={openPlantDetails} lightTheme={lightTheme}/><RightRail alarms={visibleAlarms} events={visibleEvents} plants={visibleWeatherPlants} siteWeather={siteWeather} weatherUpdatedAt={weatherUpdatedAt} onOpenLogs={() => selectView('Operations')}/></div><Bottom key={scope?.id || scope?.type || 'all-sites'} scopeKey={scope?.id || scope?.type || 'all-sites'} plants={visiblePlants} currentGeneration={realtimeKpis.currentGeneration} todayGeneration={realtimeKpis.todayGeneration}/><Footer /></>}
     </main>
   </Box>
 }

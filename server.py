@@ -35,11 +35,31 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Enrich Control Centre", version="2.0.0", lifespan=lifespan)
 
-PLANT_MAPPING_FILE = ROOT / "Control_Centre_plantwise_data_mapping.xlsx"
+PLANT_MAPPING_FILE = settings.scada_mapping_workbook if settings.scada_mapping_workbook.exists() else ROOT / "Control_Centre_plantwise_data_mapping.xlsx"
 PLANT_SITE_ALIASES = {
     "Bhokar - I": "Bhokar", "Polangal": "NLC Poolangal", "Rajgir": "BEL1MW",
     "Muradnagar": "BEL2MW", "Nagdha": "PGCIL",
 }
+UMRI_MCR = {"lat": 19.087861, "lon": 77.696167}
+UMRI_LIVE_PLANTS = {
+    "WIF": {"collection": "U2_WIF_LIVE", "lat": 19.088278, "lon": 77.696833},
+    "WHF-1": {"collection": "U1_WHF_LIVE", "lat": 19.089361, "lon": 77.699028},
+    "Haldiram": {"collection": "U5_Haldiram_LIVE", "lat": 19.093889, "lon": 77.713417},
+    "Klassic Wheels": {"collection": "U3_Klassic_LIVE", "lat": 19.097806, "lon": 77.712306},
+    "Marvelous": {"collection": "U4_Marvelous_LIVE", "lat": 19.098472, "lon": 77.710806},
+    "Parakh": {"collection": "U6_Parakh_LIVE", "lat": 19.100056, "lon": 77.720306},
+    "WHF-2": {"collection": "U9_WHF_2_LIVE", "lat": 19.104389, "lon": 77.720861},
+    "PV Sons": {"collection": "U7_PV_Sons_LIVE", "lat": 19.105417, "lon": 77.720389},
+}
+
+
+def _coordinate(value, limit):
+    if value is None:
+        return None
+    coordinate = float(value)
+    while abs(coordinate) > limit:
+        coordinate /= 10
+    return coordinate
 
 
 @app.get("/api/plant-mapping")
@@ -54,6 +74,8 @@ def plant_mapping():
         workbook_site = str(row[4]).strip()
         site_name = PLANT_SITE_ALIASES.get(workbook_site, workbook_site)
         plant_name = str(row[2]).strip() if row[2] else f"{site_name} Plant"
+        has_live_columns = len(row) > 8
+        collection = str(row[8] or "").strip() if has_live_columns else ""
         plants = sites.setdefault(site_name, [])
         plants.append({
             "id": f"mapping-{row_index}", "customerName": str(row[1] or "").strip(),
@@ -61,7 +83,43 @@ def plant_mapping():
             "ac": float(row[5] or 0), "dc": float(row[6] or 0),
             "commissioningDate": row[7].date().isoformat() if isinstance(row[7], datetime) else str(row[7] or ""),
             "communicationIssue": False,
+            "collection": collection,
+            "lat": _coordinate(row[9], 90) if len(row) > 9 else None,
+            "lon": _coordinate(row[10], 180) if len(row) > 10 else None,
+            **({"mcrLat": UMRI_MCR["lat"], "mcrLon": UMRI_MCR["lon"]} if site_name == "Umri" else {}),
         })
+    # The live-collection workbook intentionally contains only SCADA-connected
+    # plants. Merge non-live sites from the commissioned plant master so sites
+    # such as Mandrup still support site -> plant drill-down.
+    commissioned_workbook = ROOT / "Control_Centre_plantwise_data_mapping.xlsx"
+    if commissioned_workbook.exists() and commissioned_workbook.resolve() != PLANT_MAPPING_FILE.resolve():
+        live_mapped_sites = set(sites)
+        commissioned_sheet = load_workbook(commissioned_workbook, data_only=True, read_only=True).active
+        for row_index, row in enumerate(commissioned_sheet.iter_rows(min_row=2, values_only=True), start=2):
+            if not row[4]:
+                continue
+            workbook_site = str(row[4]).strip()
+            site_name = PLANT_SITE_ALIASES.get(workbook_site, workbook_site)
+            if site_name in live_mapped_sites:
+                continue
+            sites.setdefault(site_name, []).append({
+                "id": f"commissioned-{row_index}", "customerName": str(row[1] or "").strip(),
+                "plantName": str(row[2] or f"{site_name} Plant").strip(),
+                "state": str(row[3] or "").strip(), "siteName": site_name,
+                "ac": float(row[5] or 0), "dc": float(row[6] or 0),
+                "commissioningDate": row[7].date().isoformat() if isinstance(row[7], datetime) else str(row[7] or ""),
+                "communicationIssue": False, "collection": "", "lat": None, "lon": None,
+            })
+    # The legacy workbook has the PGCIL capacity row but no collection/coordinate
+    # columns. Keep it available to the common site -> plant -> inverter drill-down.
+    if "PGCIL" not in sites or not any(plant.get("collection") for plant in sites["PGCIL"]):
+        sites["PGCIL"] = [{
+            "id": "mapping-pgcil-live", "customerName": "Power Grid Corporation of India Limited (PGCIL)",
+            "plantName": "PGCIL", "state": "Madhya Pradesh", "siteName": "PGCIL",
+            "ac": 85.0, "dc": 107.957, "commissioningDate": "2025-06-05",
+            "communicationIssue": False, "collection": "PGCIL_LIVE",
+            "lat": 23.41134, "lon": 75.4809,
+        }]
     return {"source": PLANT_MAPPING_FILE.name, "sites": sites}
 
 WEATHER_HOURLY = ",".join([

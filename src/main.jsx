@@ -6,11 +6,18 @@ import App from './App.jsx'
 class ErrorBoundary extends Component {
   state = { error: null }
   static getDerivedStateFromError(error) { return { error } }
+  componentDidMount() {
+    if (import.meta.hot) {
+      this.removeHotListener = import.meta.hot.on('vite:afterUpdate', () => this.setState({ error: null }))
+    }
+  }
+  componentWillUnmount() { this.removeHotListener?.() }
   render() {
     if (this.state.error) {
-      return <pre style={{ color: '#ff6b6b', padding: 24, whiteSpace: 'pre-wrap' }}>
-        {this.state.error.stack || this.state.error.message}
-      </pre>
+      return <div style={{ color: '#ff6b6b', padding: 24 }}>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.error.stack || this.state.error.message}</pre>
+        <button onClick={() => window.location.reload()}>Reload dashboard</button>
+      </div>
     }
     return this.props.children
   }

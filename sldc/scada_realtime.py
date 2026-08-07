@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import threading
-import time
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from pymongo.errors import ConfigurationError
@@ -14,9 +14,11 @@ from pymongo.errors import ConfigurationError
 from .config import settings
 
 log = logging.getLogger(__name__)
-TAG_RE = re.compile(r"^INV(?:ERTER)?[_ -]?0?(\d{1,2})[_ -](Active[_ -]?Power|Cumulative[_ -]?Generation)$", re.I)
+TAG_RE = re.compile(
+    r"^(?:Block[_ -]?0?(\d{1,3})[_ -])?INV(?:ERTER)?[_ -]?0?(\d{1,3})[_ -](Active[_ -]?Power|(?:Cumulative|Total)[_ -]?Generation)$", re.I,
+)
 DETAIL_TAG_RE = re.compile(
-    r"^INV(?:ERTER)?[_ -]?0?(\d{1,2})[_ -](Active[_ -]?Power|Daily[_ -]?Generation|Cumulative[_ -]?Generation)$", re.I,
+    r"^(?:Block[_ -]?0?(\d{1,3})[_ -])?INV(?:ERTER)?[_ -]?0?(\d{1,3})[_ -](Active[_ -]?Power|Daily[_ -]?Generation|(?:Cumulative|Total)[_ -]?Generation)$", re.I,
 )
 TIME_KEYS = ("timestamp_IST", "timestamp", "Timestamp", "time", "Time", "datetime", "DateTime", "createdAt", "updatedAt")
 PLANT_TOTAL_TAGS = {
@@ -29,6 +31,51 @@ BHOKAR_LIVE_COLLECTIONS = [
     "B4_Padmavati_LIVE", "B5_SoundCasting_LIVE", "B6_IMP_LIVE",
     "B7_Suyash_LIVE", "B8_Veersha_LIVE", "B9_Omya_LIVE",
 ]
+UMRI_LIVE_COLLECTIONS = [
+    "U1_WHF_LIVE", "U2_WIF_LIVE", "U3_Klassic_LIVE", "U4_Marvelous_LIVE",
+    "U5_Haldiram_LIVE", "U6_Parakh_LIVE", "U7_PV_Sons_LIVE", "U9_WHF_2_LIVE",
+]
+DEFAULT_LIVE_COLLECTIONS = {
+    "Bhokar": BHOKAR_LIVE_COLLECTIONS,
+    "Umri": UMRI_LIVE_COLLECTIONS,
+    "PGCIL": ["PGCIL_LIVE"],
+}
+WORKBOOK_SITE_ALIASES = {"Bhokar - I": "Bhokar", "Polangal": "NLC Poolangal"}
+
+
+def _coordinate(value, limit):
+    if value is None:
+        return None
+    coordinate = float(value)
+    while abs(coordinate) > limit:
+        coordinate /= 10
+    return coordinate
+
+
+@lru_cache(maxsize=1)
+def workbook_collection_mapping() -> tuple[dict, dict]:
+    path = settings.scada_mapping_workbook
+    if not path.exists():
+        return {}, {}
+    from openpyxl import load_workbook
+    collections: dict[str, list[str]] = {}
+    metadata = {}
+    sheet = load_workbook(path, data_only=True, read_only=True).active
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        collection = str(row[8] or "").strip() if len(row) > 8 else ""
+        if not collection:
+            continue
+        workbook_site = str(row[4] or "").strip()
+        site = WORKBOOK_SITE_ALIASES.get(workbook_site, workbook_site)
+        collections.setdefault(site, []).append(collection)
+        metadata[collection.casefold()] = {
+            "customerName": str(row[1] or "").strip(), "plantName": str(row[2] or "").strip(),
+            "state": str(row[3] or "").strip(), "siteName": site,
+            "ac": float(row[5] or 0), "dc": float(row[6] or 0),
+            "lat": _coordinate(row[9], 90) if len(row) > 9 else None,
+            "lon": _coordinate(row[10], 180) if len(row) > 10 else None,
+        }
+    return collections, metadata
 
 
 def _json_mapping(raw: str) -> dict:
@@ -41,7 +88,9 @@ def _json_mapping(raw: str) -> dict:
 
 
 def site_configuration() -> dict[str, dict]:
-    collections = _json_mapping(settings.scada_site_collections)
+    workbook_collections, _ = workbook_collection_mapping()
+    collections = {name: list(values) for name, values in workbook_collections.items()}
+    collections.update(_json_mapping(settings.scada_site_collections))
     databases = _json_mapping(settings.scada_site_databases)
     names = set(collections) | set(databases)
     # Simple per-site variables are convenient in .env and override JSON mappings.
@@ -50,9 +99,10 @@ def site_configuration() -> dict[str, dict]:
         if match and key != "SCADA_SITE_COLLECTIONS":
             names.add(match.group(1).replace("_", " ").title())
     result = {}
-    if settings.scada_mongodb_uri and not names:
-        names.add("Bhokar")
-        collections["Bhokar"] = BHOKAR_LIVE_COLLECTIONS
+    if settings.scada_mongodb_uri:
+        for site, defaults in DEFAULT_LIVE_COLLECTIONS.items():
+            names.add(site)
+            collections.setdefault(site, defaults)
     for name in names:
         env_key = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
         raw = os.getenv(f"SCADA_{env_key}_COLLECTIONS")
@@ -60,7 +110,7 @@ def site_configuration() -> dict[str, dict]:
         if isinstance(configured, str):
             configured = configured.split(",")
         collection_names = [str(item).strip() for item in configured if str(item).strip()]
-        if name.casefold() == "bhokar":
+        if name.casefold() in {"bhokar", "umri"}:
             live_collections = [item for item in collection_names if item.upper().endswith("_LIVE")]
             if live_collections:
                 collection_names = live_collections
@@ -69,7 +119,7 @@ def site_configuration() -> dict[str, dict]:
                     re.sub(r"_(?:daily|monthly|yearly)$", "", item, flags=re.I) + "_LIVE"
                     for item in collection_names
                 ]
-            collection_names = sorted(set(collection_names), key=lambda item: int(re.match(r"B(\d+)", item, re.I).group(1)))
+            collection_names = sorted(set(collection_names), key=lambda item: int(re.match(r"[BU](\d+)", item, re.I).group(1)))
         database = os.getenv(f"SCADA_{env_key}_DATABASE", databases.get(name, settings.scada_mongodb_database))
         if collection_names:
             result[name] = {"database": database, "collections": collection_names}
@@ -89,6 +139,26 @@ def _number(value):
         return number if number == number else None
     except (TypeError, ValueError):
         return None
+
+
+def _positive_generation_value(value):
+    """Normalize reversed meter signs while dropping common Modbus fault sentinels."""
+    number = _number(value)
+    if number is None:
+        return None
+    if number <= -2_147_000 or -2148 <= number <= -2146:
+        return None
+    return abs(number)
+
+
+def _lifetime_to_mwh(value, *, small_values_are_gwh=False):
+    """Normalize mixed lifetime counters: large counters are kWh, smaller counters are already MWh."""
+    number = _positive_generation_value(value)
+    if number is None:
+        return None
+    if small_values_are_gwh and number < 100_000:
+        return number * 1000
+    return number * settings.scada_generation_to_mwh if number >= 100_000 else number
 
 
 def extract_inverter_values(document: dict) -> dict[str, dict[int, float]]:
@@ -112,14 +182,16 @@ def extract_inverter_values(document: dict) -> dict[str, dict[int, float]]:
         match = TAG_RE.fullmatch(tag.strip())
         if not match:
             return
-        inverter = int(match.group(1))
-        if not 1 <= inverter <= 20:
+        block = int(match.group(1) or 0)
+        inverter = int(match.group(2))
+        if inverter < 1:
             return
-        number = _number(raw)
+        inverter_key = block * 1000 + inverter
+        number = _positive_generation_value(raw)
         if number is None:
             return
-        kind = "active_power" if re.sub(r"[^a-z]", "", match.group(2).lower()) == "activepower" else "cumulative_generation"
-        values[kind][inverter] = number
+        kind = "active_power" if re.sub(r"[^a-z]", "", match.group(3).lower()) == "activepower" else "cumulative_generation"
+        values[kind][inverter_key] = number
 
     visit(document)
     return values
@@ -184,9 +256,12 @@ def _serializable_value(value):
 class ScadaRealtimeReader:
     def __init__(self):
         self.client = None
-        self._details_cache = {}
-        self._details_expires = 0.0
-        self._details_lock = threading.Lock()
+        self._details_locks = {}
+        self._details_locks_guard = threading.Lock()
+
+    def _site_lock(self, site: str):
+        with self._details_locks_guard:
+            return self._details_locks.setdefault(site, threading.Lock())
 
     def _client(self):
         if not settings.scada_mongodb_uri:
@@ -233,6 +308,8 @@ class ScadaRealtimeReader:
                     totals = extract_plant_totals(document)
                     document_power = sum(values["active_power"].values()) if values["active_power"] else totals["active_power"]
                     document_generation = sum(values["cumulative_generation"].values()) if values["cumulative_generation"] else totals["cumulative_generation"]
+                    document_power = _positive_generation_value(document_power)
+                    document_generation = _positive_generation_value(document_generation)
                     if document_power is not None:
                         power += document_power
                     if document_generation is not None:
@@ -265,15 +342,9 @@ class ScadaRealtimeReader:
         site = next((name for name in configured if name.casefold() == requested_site.casefold()), None)
         if not site or not settings.scada_mongodb_uri:
             return None
-        now_monotonic = time.monotonic()
-        if self._details_cache.get("name") == site and now_monotonic < self._details_expires:
-            return self._details_cache
-        # Automatic refresh and a user click can arrive together. Only one request
-        # should fan out to the nine cloud collections for each one-minute sample.
-        with self._details_lock:
-            now_monotonic = time.monotonic()
-            if self._details_cache.get("name") == site and now_monotonic < self._details_expires:
-                return self._details_cache
+        # Serialize reads for the same site, but always fetch the newest document.
+        # The *_LIVE collections update every second and must never be API-cached.
+        with self._site_lock(site):
             return self._load_site_details(site, configured[site])
 
     def _load_site_details(self, site: str, config: dict) -> dict:
@@ -298,18 +369,23 @@ class ScadaRealtimeReader:
 
                 def consume_detail(tag, raw):
                     match = DETAIL_TAG_RE.fullmatch(str(tag).strip())
-                    if not match or not 1 <= int(match.group(1)) <= 20:
+                    if not match or int(match.group(2)) < 1:
                         return False
-                    inverter = inverters.setdefault(int(match.group(1)), {"inverter": int(match.group(1))})
-                    value = _number(raw)
-                    kind = re.sub(r"[^a-z]", "", match.group(2).lower())
+                    block = int(match.group(1) or 0)
+                    inverter_number = int(match.group(2))
+                    inverter_key = block * 1000 + inverter_number
+                    inverter_label = f"Block {block} Inv {inverter_number}" if block else inverter_number
+                    inverter = inverters.setdefault(inverter_key, {"inverter": inverter_label})
+                    value = _positive_generation_value(raw)
+                    kind = re.sub(r"[^a-z]", "", match.group(3).lower())
                     if kind == "activepower":
                         inverter["activePowerRaw"] = value
                         inverter["activePowerMw"] = round(value * settings.scada_power_to_mw, 3) if value is not None else None
                     elif kind == "dailygeneration":
                         inverter["dailyGenerationMWh"] = round(value * settings.scada_generation_to_mwh, 3) if value is not None else None
                     else:
-                        inverter["cumulativeGenerationMWh"] = round(value * settings.scada_generation_to_mwh, 3) if value is not None else None
+                        lifetime_mwh = _lifetime_to_mwh(value, small_values_are_gwh=collection_name.casefold() == "nlc_live")
+                        inverter["cumulativeGenerationMWh"] = round(lifetime_mwh, 3) if lifetime_mwh is not None else None
                     return True
 
                 def visit_detail(node, path=""):
@@ -335,22 +411,29 @@ class ScadaRealtimeReader:
                 visit_detail(document)
                 rows = [inverters[number] for number in sorted(inverters)]
                 totals = extract_plant_totals(document)
-                current_mw = sum(row.get("activePowerMw") or 0 for row in rows) if rows else (
-                    round(totals["active_power"] * settings.scada_power_to_mw, 3) if totals["active_power"] is not None else None
+                active_values = [row["activePowerMw"] for row in rows if row.get("activePowerMw") is not None]
+                daily_values = [row["dailyGenerationMWh"] for row in rows if row.get("dailyGenerationMWh") is not None]
+                cumulative_values = [row["cumulativeGenerationMWh"] for row in rows if row.get("cumulativeGenerationMWh") is not None]
+                current_mw = sum(active_values) if active_values else (
+                    round(_positive_generation_value(totals["active_power"]) * settings.scada_power_to_mw, 3) if _positive_generation_value(totals["active_power"]) is not None else None
                 )
-                daily_mwh = sum(row.get("dailyGenerationMWh") or 0 for row in rows) if rows else (
-                    round(totals["daily_generation"] * settings.scada_generation_to_mwh, 3) if totals["daily_generation"] is not None else None
+                daily_mwh = sum(daily_values) if daily_values else (
+                    round(_positive_generation_value(totals["daily_generation"]) * settings.scada_generation_to_mwh, 3) if _positive_generation_value(totals["daily_generation"]) is not None else None
                 )
-                cumulative_mwh = sum(row.get("cumulativeGenerationMWh") or 0 for row in rows) if rows else (
-                    round(totals["cumulative_generation"] * settings.scada_generation_to_mwh, 3) if totals["cumulative_generation"] is not None else None
+                cumulative_mwh = sum(cumulative_values) if cumulative_values else (
+                    round(_lifetime_to_mwh(totals["cumulative_generation"]), 3) if _lifetime_to_mwh(totals["cumulative_generation"]) is not None else None
                 )
+                _, workbook_metadata = workbook_collection_mapping()
+                metadata = workbook_metadata.get(collection_name.casefold(), {})
                 return {
                     "collection": collection_name,
-                    "name": _plant_name(collection_name),
+                    "name": metadata.get("plantName") or _plant_name(collection_name),
+                    **metadata,
                     # A collection is communicating when its latest document can
                     # be read. Zero/missing active power is an operational value,
                     # not a collection communication failure.
                     "available": bool(document),
+                    "dataAvailable": current_mw is not None,
                     "timestamp": timestamp.isoformat() if timestamp else None,
                     "parameters": parameters,
                     "rawTags": raw_tags,
@@ -360,7 +443,7 @@ class ScadaRealtimeReader:
                     "cumulativeGenerationMWh": cumulative_mwh,
                 }
             except Exception as exc:
-                log.warning("Bhokar SCADA collection %s unavailable: %s", collection_name, exc)
+                log.warning("%s SCADA collection %s unavailable: %s", site, collection_name, exc)
                 return {
                     "collection": collection_name, "name": _plant_name(collection_name),
                     "available": False, "error": "Cloud SCADA temporarily unavailable; retrying on the next one-minute refresh",
@@ -369,26 +452,19 @@ class ScadaRealtimeReader:
         with ThreadPoolExecutor(max_workers=min(4, len(config["collections"]))) as executor:
             plants = list(executor.map(read_plant, config["collections"]))
 
-        previous = {plant["collection"]: plant for plant in self._details_cache.get("plants", [])}
-        for index, plant in enumerate(plants):
-            if not plant.get("available") and plant["collection"] in previous and previous[plant["collection"]].get("available"):
-                retained = dict(previous[plant["collection"]])
-                retained["stale"] = True
-                plants[index] = retained
-            elif plant.get("available"):
+        for plant in plants:
+            if plant.get("available"):
                 plant["stale"] = False
 
+        cumulative_totals = [plant["cumulativeGenerationMWh"] for plant in plants if plant.get("cumulativeGenerationMWh") is not None]
         result = {
             "name": site,
             "timestamp": max((plant.get("timestamp") for plant in plants if plant.get("timestamp")), default=None),
             "currentMw": round(sum(plant.get("currentMw") or 0 for plant in plants), 3),
             "dailyGenerationMWh": round(sum(plant.get("dailyGenerationMWh") or 0 for plant in plants), 3),
-            "cumulativeGenerationMWh": round(sum(plant.get("cumulativeGenerationMWh") or 0 for plant in plants), 3),
+            "cumulativeGenerationMWh": round(sum(cumulative_totals), 3) if cumulative_totals else None,
             "plants": plants,
         }
-        if any(plant.get("available") for plant in plants):
-            self._details_cache = result
-            self._details_expires = time.monotonic() + 0.75
         return result
 
     def plant_details(self, requested_site: str, requested_collection: str) -> dict | None:
@@ -409,13 +485,21 @@ class ScadaRealtimeReader:
 
 
 def _plant_name(collection_name: str) -> str:
-    name = re.sub(r"^B\d+[_ -]*", "", collection_name, flags=re.I)
+    name = re.sub(r"^[BU]\d+[_ -]*", "", collection_name, flags=re.I)
     normalized = re.sub(r"[^a-z0-9]", "", name.casefold())
     aliases = {
         "jagdeeshlive": "Jagadeesh",
         "suyashlive": "Suyesh",
         "soundcastinglive": "Sound Castings",
         "veershalive": "Veeresha",
+        "wiflive": "WIF",
+        "whflive": "WHF-1",
+        "whf2live": "WHF-2",
+        "klassiclive": "Klassic Wheels",
+        "marvelouslive": "Marvelous",
+        "haldiramlive": "Haldiram",
+        "parakhlive": "Parakh",
+        "pvsonslive": "PV Sons",
     }
     if normalized in aliases:
         return aliases[normalized]
